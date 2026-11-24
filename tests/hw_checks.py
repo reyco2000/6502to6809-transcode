@@ -563,6 +563,48 @@ def g_verify(check):
     return ok
 
 
+@group('guide')
+def g_guide(check):
+    import os
+    from kit import survey
+    from kit.hw.match import NearMiss
+    from kit.paths import REPO
+    ok = True
+    # one image: a loader-ish routine, a TRAP site, an SED, a hot hi-res routine, a tone, a two-voice near-miss
+    code = bytearray(0x200)
+    code[0x000:0x00C] = tone_code()                                   # $0800 tone (bucket 6)
+    code[0x020:0x024] = bytes([0x8D, 0x5E, 0xC0, 0x60])               # $0820 STA $C05E (AN3: bucket 3)
+    code[0x040:0x043] = bytes([0xF8, 0xD8, 0x60])                     # $0840 SED / CLD (bucket 4)
+    code[0x060:0x060 + len(TWO_VOICE)] = TWO_VOICE                    # $0860 two-voice (bucket 2)
+    code[0x0A0:0x0A4] = bytes([0x8D, 0x00, 0x20, 0x60])               # $08A0 STA $2000 (hi-res: bucket 5)
+    from kit.discover import discover
+    mem = bytearray(0x10000)
+    mem[0x800:0xA00] = code
+    roots = [0x800, 0x820, 0x840, 0x860, 0x8A0]
+    c = discover(mem, roots, {}, code_ranges=((0x800, 0x9FF),))
+    d = {'id': 0, 'page': '08', 'bytes': bytes(code).hex().upper(), 'instr': {f'{a:04X}': 100 for a in c.insns},
+         'ea': {'08A0': 8}, 'smc': {}, 'entries': [[f'{r:04X}', 'jsr', '0000', 0, 1] for r in roots]}
+    cov = {'images': [d], 'rom_entries': [], 'loaders': ['0900'], 'summary': {}}
+    s = survey.survey(cov, [survey.Image(x) for x in cov['images']])
+    r = survey.rank(s, s['matches'], s['near'], cov)
+    b = {a: k for k, a, _ in r}
+    ok &= check(f'rank: buckets ordered ({r})', [k for k, _, _ in r] == sorted(k for k, _, _ in r))
+    ok &= check('rank: loader is bucket 1', b.get(0x0900) == 1)
+    ok &= check('rank: multi-voice is bucket 2', b.get(0x0860) == 2)
+    ok &= check('rank: trapped switch is bucket 3', b.get(0x0820) == 3)
+    ok &= check('rank: decimal mode is bucket 4', b.get(0x0840) == 4)
+    ok &= check('rank: hot hi-res is bucket 5', b.get(0x08A0) == 5)
+    ok &= check('rank: proposed idiom is bucket 6', b.get(0x0800) == 6)
+    ok &= check('rank: one line per routine', len(b) == len(r))
+    import io
+    out = io.StringIO()
+    survey.report(cov, s, out)
+    ok &= check('survey: section 8 printed', '## 8. Least likely to transcode' in out.getvalue())
+    for f in ('SKILL.md', os.path.join('docs', 'DECIDE.md')):
+        ok &= check(f'guide: {f} has the ranking', 'Least likely to transcode' in open(os.path.join(REPO, f)).read())
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():

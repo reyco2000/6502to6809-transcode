@@ -16,6 +16,8 @@ Run from the repo root (modules use `python3 -m`; there is no package install, l
 make -C sim                          # build sim/cc3sim (6809 unit-test machine, needed by difftests)
 python3 -m tests.selftest            # kit self-test, no game data needed (opcodes, LZSS, RS-DOS image,
                                      # GIME tables, xc65+cc3sim difftest, scaffolder, disk formats)
+python3 -m tests.hw_checks [GROUP]   # hardware transcoder checks only (groups: map survey iocheck iov docs idiom
+                                     # lib_delay lib_io match match_io survey_idioms verify guide); also in selftest
 ```
 
 Reference port (needs the user's Karateka disk and Apple ROMs, paths in `ports/karateka/port.toml`):
@@ -46,6 +48,11 @@ Pipeline (details in `docs/METHOD.md`):
 8. **MAME probes** — `kit/mame/*.lua` + `invcheck512/128.py` (invariant GIME == conv(Apple page)), `profile.py`.
 
 Kit modules are game-independent; a port supplies a spec module (`docs/SPEC.md`; generic parts in `kit/specbase.py`, paths from `port.toml` via `kit/portcfg.py`) and its thin `gen.py`/`build*.py`/`test_engine.py` wrappers call into the kit. `ports/karateka/` is the worked example; nothing in the kit depends on it.
+
+### Hardware transcoder (`kit/hw/`)
+- `kit/hw/apple2.py` is the single source for Apple II hardware: every `$C0xx` switch and firmware entry has one action (`Runtime`, `Latch`, `Ignore`, `Trap`, `IdiomOnly`). `gen.py` (I/O table, latches, `io_check`), `survey.py`, the builds' I/O stubs (`iocheck.stubs`) and the doc tables (`--doc`, checked by the self-test) all read it. Unmapped, trapped or loop-only accesses are generation errors unless the spec has an `HW_OVERRIDES` entry.
+- `Runtime(cond='HW_IOV')` handlers (`rt/hw/apple2/io_video.asm`) are appended to the runtime only when used. This keeps the Karateka disks byte-identical.
+- Idioms: `kit/hw/match.py` proposes them, `kit/hw/verify.py` tests them, and the user copies the ones they accept into `spec.HW_IDIOMS`. `kit/hw/idiom.expand` turns those into `NATIVE`/`NATIVE_RANGES`/`NATIVE_EXITS`, and `kit/hw/lib.py` renders `rt/hw/apple2/<kind>.asm` into `build/src/hw_inst.asm`. Mid-routine idioms exit with `jmp E<exit>`. Timing constants (`HW_OVH`, `*_OVA`, `TONE_FIX`) are calibrated against the difftests. Re-check them with the `verify`/`lib_*` groups after touching a template.
 
 ### Transcoder ABI (`kit/xc65.py`) — invariants to preserve
 - 6502 A→6809 A, X→B, Y→byte `RY` (`RYW` word with zero high byte, for `(zp),Y`); 6502 stack = 6809 S (native JSR/RTS); DP=0 is zero page. 6809 X and U are template scratch.

@@ -27,10 +27,10 @@ Run all commands from the kit repo, or from a port made with `kit.newport` throu
 | 1 | **Identify and open the disk**: format, file system, protection, boot chain, hand-over PC, level loader (`docs/DISKS.md`) | `python3 -m kit.disk.a2disk info IMAGE`, then `cat` / `get` / `todsk`; `a2-disassemble`, `a2-trace-calls` skills | format known; hand-over address known |
 | 2 | Snapshots: set `HAND_OVER` (and the level triggers) in `NAME/snapshots.py` | `./run.sh snapshots` | `build/snap/snap_*.json` pc = hand-over |
 | 3 | Profile: play-through scenarios in `NAME/scenarios/*.json` (keys, joystick, phases; `pokes` such as infinite lives to reach late levels) | `./run.sh profile` | `build/coverage.json` reaches every level (every disk load seen) |
-| 4 | **Survey: what to transcode** | `./run.sh survey` | `build/survey.txt`, `build/draft_spec.py` |
-| 5 | Spec: confirm the candidates against the listing; fill `NATIVE`, `NATIVE_RANGES`, `NATIVE_EXITS`, `SMC_*`, `TRAPS`, `CODE_RANGES`, `STAGES` (restart or call stages), `HIRES_ACCESS`, `ROMDATA` | `python3 -m kit.listing PORT RANGE` (executed code with counts); `kit.listing PORT --a2dis build/dis RANGE` (the `a2-disassemble` skill seeded with the profile's entries); `docs/DECIDE.md`, `docs/SPEC.md` | `./run.sh gen` has no errors |
+| 4 | **Survey: what to transcode** (hardware through the map `kit/hw/apple2.py`; section 7 proposes hardware idioms, section 8 ranks what will not transcode) | `./run.sh survey --verify` (each proposal tested against its 6502 code, timing included) | `build/survey.txt`, `build/draft_spec.py` |
+| 5 | Spec: confirm the candidates against the listing; fill `NATIVE`, `NATIVE_RANGES`, `NATIVE_EXITS`, `HW_IDIOMS` (uncomment the verified proposals you confirm), `HW_OVERRIDES` (only for trapped switches that do not matter), `SMC_*`, `TRAPS`, `CODE_RANGES`, `STAGES` (restart or call stages), `HIRES_ACCESS`, `ROMDATA` | `python3 -m kit.listing PORT RANGE` (executed code with counts); `kit.listing PORT --a2dis build/dis RANGE` (the `a2-disassemble` skill seeded with the profile's entries); `docs/DECIDE.md`, `docs/SPEC.md` | `./run.sh gen` has no errors (no unmapped or trapped hardware access) |
 | 6 | Differential test of the generated code | `./run.sh test_engine -n 300 [--set IMAGE]` | `diff: 0` |
-| 7 | Natives: start from `rt/natives/apple2/*`; test them bit-exact against the 6502 (Karateka `test_native.py` is the model) | | `diff: 0` |
+| 7 | Natives, for what the idiom library does not cover: start from `rt/natives/apple2/*`; test them bit-exact against the 6502 (Karateka `test_native.py` is the model) | | `diff: 0` |
 | 8 | Build: choose the target (`docs/MEMORY.md`) | `./run.sh build512` / `build128` | disk built, budgets asserted |
 | 9 | MAME: boot, invariant, speed | `kit/mame/*.lua` (see "MAME probes") | 0 inconsistent; draws/frame ≈ Apple |
 | 10 | User playtest (the user runs XRoar); fix, then re-run steps 6-9 | | user confirms |
@@ -55,7 +55,20 @@ Rules that hold at every step:
 - **Booting:** `kit/host` boots every bootable format directly. `.nib`/`.woz` keep their protected tracks, so never convert a protected disk to `.dsk` to port it.
 - **Then find the boot chain:** boot on the host, watch where Disk II activity stops and where the title loop waits, and disassemble the loader stages. Set `HAND_OVER` to the first PC of the game proper after the loader/relocator.
 
-## What to transcode vs replace (summary of `docs/DECIDE.md`)
+## Least likely to transcode (summary of `docs/DECIDE.md`)
+Most likely to be replaced first. Survey section 8 applies this list to the game.
+
+| # | what | outcome |
+|---|---|---|
+| 1 | Loaders, RWTS, copy protection, relocators | never transcoded: snapshots plus `nt_load` |
+| 2 | Cycle-timed sound beyond a single voice (multi-voice players, sample playback, notes that poll the keyboard) | always a hand-written native |
+| 3 | Hardware the map traps on: language card, aux memory, double hi-res, slot I/O, and text/lo-res/mixed display (tracked, not shown) | extend the kit first, or `HW_OVERRIDES` when the access doesn't matter |
+| 4 | Code the transcoder rejects: decimal mode, `PHP/PLP`, `TSX/TXS`, `RTI`, `BRK`, `JMP (ind)`, the V flag, opcode SMC | a native, or extend `xc65` |
+| 5 | Hot hi-res code: blitters, fills, scrolls | transcodes correctly but too slowly: a native for speed |
+| 6 | Standard hardware idioms: VBL polls, counted delays, single-voice tones, paddle count loops, `WAIT`/`PREAD`/`BELL` | library routines (`rt/hw/apple2/`), proposed by the survey with test evidence; one `Idiom(...)` line each |
+| 7 | Everything else: game logic, AI, tables, menus, keyboard polling | transcodes |
+
+## What to transcode vs replace (the rules; full text in `docs/DECIDE.md`)
 
 | rule | when | then |
 |---|---|---|
@@ -67,6 +80,21 @@ Rules that hold at every step:
 | **S** SMC | patched opcodes or operands | `SMC_BYTES`/`SMC_IMM`, or inside a native |
 | **L** loaders | boot, RWTS, relocators, decompressors | dropped: snapshots plus the native level loader (`nt_load`) replace them |
 | everything else | game logic, AI, tables, menus | transcode |
+
+## The hardware transcoder (`kit/hw/`)
+- **Hardware map** (`kit/hw/apple2.py`). Every soft switch and firmware entry has one action:
+  - a runtime handler or latch;
+  - ignored;
+  - a trap, which is a generation error unless the spec overrides it;
+  - loop-only, which is an idiom.
+
+  The generator, the survey, the builds and the docs all read this map, so there are no silent defaults.
+- **Idiom library** (`rt/hw/apple2/*.asm`, `kit/hw/lib.py`). Routines with parameters, timed in Apple cycles × 1.75 through `hw_dly`:
+  - `vbl_poll`, `delay`, `tone` and `paddle_count`;
+  - `rom_wait`, `rom_pread` and `rom_bell`.
+- **Matchers** (`kit/hw/match.py`). They find those idioms and only *propose* them. Near-misses come with a reason; these are the hand natives.
+- **Evidence** (`kit/hw/verify.py`, `survey --verify`). Each proposal is run against the 6502 code on random cases, comparing registers, flags and RAM. Timing is compared on click intervals, total time, or a paddle-timer model, depending on the kind.
+- **Tests:** `python3 -m tests.hw_checks [GROUP]`.
 
 ## Runtime services (already written; see `docs/NATIVES.md`)
 - **Keyboard.** `$C000`/`$C010` with Apple-style auto-repeat; the CoCo matrix is mapped to ASCII; BREAK = ESC.

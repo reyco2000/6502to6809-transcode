@@ -15,6 +15,7 @@ import os
 import sys
 
 from .opcodes import OPS, MODE_LEN
+from .xc65 import REJECT
 from .hw import apple2 as hw
 from .hw import Runtime, Latch, Ignore, Trap, IdiomOnly
 
@@ -147,6 +148,7 @@ def survey(cov, images, top=25):
     rcls = collections.defaultdict(collections.Counter)   # routine -> EA class -> executions
     io_sites = []                          # (pc, image, mnemonic, address, count, softswitch)
     hires_sites = collections.Counter()    # routine -> executions of hi-res memory instructions
+    rejected = []                          # (pc, image, mnemonic, routine): opcodes xc65 does not translate
     total = 0
     pages = set()
     for im in images:
@@ -166,6 +168,8 @@ def survey(cov, images, top=25):
                     rcls[r][nm] += n
             if m & EA_BITS['hires']:
                 hires_sites[r] += n
+            if mn in REJECT or (mn == 'JMP' and mode == 'ind'):
+                rejected.append((a, im.id, 'JMP (ind)' if mn == 'JMP' else mn, r))
             if m & EA_BITS['io'] or (val is not None and mode in ('abs', 'absx', 'absy') and 0xC000 <= val <= 0xC0FF):
                 io_sites.append((a, im.id, mn, mode, val, n, softsw(val, mode, mn) if val is not None else None))
     smc = []
@@ -177,7 +181,7 @@ def survey(cov, images, top=25):
         rom[_h(e[3])] += e[4]
     matches, near = idioms(images)
     return dict(total=total, rcyc=rcyc, rcls=rcls, io=io_sites, hires=hires_sites, smc=sorted(smc), rom=rom,
-                pages=sorted(pages), routines=rts, top=top, matches=matches, near=near)
+                pages=sorted(pages), routines=rts, top=top, matches=matches, near=near, rejected=rejected)
 
 
 def idioms(images):
@@ -291,6 +295,75 @@ def report(cov, s, out=None):
         p(f"  near-miss {n.kind:<13} ${n.lo:04X}-${n.hi:04X}  img {' '.join(map(str, ids))}  {n.reason}")
     if not s.get('matches') and not s.get('near'):
         p('  (none)')
+
+    p('\n## 8. Least likely to transcode (this game)  -> SKILL.md / docs/DECIDE.md; everything else transcodes')
+    last, group = None, []
+
+    def flush():
+        if group:
+            more = f'  (+{len(group) - 1} more up to ${group[-1][0]:04X})' if len(group) > 1 else ''
+            p(f'  {_r(group[0][0])}  {group[0][1]}{more}')
+    for b, r, why in rank(s, s.get('matches', []), s.get('near', []), cov):
+        if group and (b != last or why != group[0][1] or r is None or r - group[-1][0] > 0x100):
+            flush()
+            group = []
+        if b != last:
+            p(f'### {b}. {BUCKETS[b]}')
+            last = b
+        group.append((r, why))
+    flush()
+
+
+BUCKETS = {
+    1: 'loaders, RWTS, copy protection: never transcoded (snapshots + nt_load)',
+    2: 'cycle-timed sound beyond a single voice: hand-written native',
+    3: 'hardware the map traps on: extend the kit, or HW_OVERRIDES when it does not matter',
+    4: 'code the transcoder rejects (decimal mode, PHP/PLP, TSX/TXS, RTI, BRK, JMP (ind), opcode SMC): native or extend xc65',
+    5: 'hot hi-res code (blitters, fills, scrolls): transcodes correctly but slowly; native for speed',
+    6: 'standard hardware idioms: library routines (section 7)',
+}
+
+
+def rank(s, matches, near, cov):
+    """what is least likely to transcode in this game: [(bucket 1-6, routine, reason)], one line per routine
+    (its lowest bucket), sorted by bucket then routine.  Everything not listed (bucket 7) transcodes."""
+    ents = sorted(s['routines'])
+    own = lambda a: owner(ents, a) if owner(ents, a) is not None else a
+    out = {}
+
+    def add(b, r, why):
+        if r not in out or out[r][0] > b:
+            out[r] = (b, why)
+    for x in cov.get('loaders', []):
+        add(1, _h(x) if isinstance(x, str) else x, 'loader (bulk writer of code)')
+    near = [n[0] if isinstance(n, tuple) else n for n in near]
+    matches = [m[0] if isinstance(m, tuple) else m for m in matches]
+    for n in near:
+        if n.kind == 'tone':
+            add(2, own(n.lo), n.reason)
+        elif n.kind != 'delay':
+            add(6, own(n.lo), f'{n.kind} near-miss: {n.reason}')
+    for a, imid, mn, mode, val, cnt, sw in s['io']:
+        if sw and sw[2].startswith('TRAP'):
+            disk = sw[1] == 'disk'                       # Disk II access is loader code
+            add(1 if disk else 3, own(a), 'Disk II access (loader)' if disk else f'{mn} ${val:04X}: {sw[2][6:]}')
+    for a, n in s['rom'].items():
+        k = rom_entry(a)
+        if k and k[2].startswith('TRAP'):
+            disk = k[1] == 'disk'
+            add(1 if disk else 3, a, f'ROM {k[0]} (loader)' if disk else f'ROM {k[0]}: {k[2][6:]}')
+    for a, imid, mn, r in s.get('rejected', []):
+        add(4, r if r is not None else a, f'{mn} at ${a:04X}')
+    for a, imid, kind, nt, wr in s['smc']:
+        if kind == 'opcode':
+            add(4, own(a), f'opcode SMC at ${a:04X}')
+    tot_h = sum(s['hires'].values()) or 1
+    for r, n in s['hires'].most_common(12):
+        if r is not None and n / tot_h > 0.02:
+            add(5, r, f'{100 * n / tot_h:.0f}% of hi-res traffic')
+    for m in matches:
+        add(6, own(m.idiom.entry) if m.idiom.entry < 0xC000 else m.idiom.entry, f'{m.idiom.kind} (proposed)')
+    return sorted(((b, r, why) for r, (b, why) in out.items()), key=lambda v: (v[0], v[1]))
 
 
 def _r(r):
