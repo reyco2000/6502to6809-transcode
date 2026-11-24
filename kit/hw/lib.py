@@ -104,6 +104,58 @@ def prepare_delay(i):
             'INNER_PASS': ip, 'OUTER_PASS': op, 'SUB': sub, 'EXITREGS': exit_regs(p)}
 
 
+TONE_FIX = 86              # CoCo cycles of one tone pass outside its 8-cycle loop (calibrated by tests/hw_checks.py)
+TONE_SETUP = 22            # tone setup cost in 8-cycle units, taken off its first pass (calibrated)
+BELL_OVA = 26              # rom_bell: its own cost per click in Apple cycles (calibrated)
+
+
+def prepare_tone(i):
+    p = i.params
+    ip, op = p['inner_pass'], p['outer_pass']
+    if 256 * ip + op > 9362:
+        raise ValueError(f'{symbol(i)}: tone pass too long')
+    return {'LOAD_DURATION': load(p['duration']), 'LOAD_PERIOD': load(p['period']), 'INNER_PASS': ip,
+            'OUTER_PASS': op, 'FIX': TONE_FIX, 'SETUP': TONE_SETUP, 'EXITREGS': exit_regs(p)}
+
+
+def paddle_model(joy, pass_cycles, max_count):
+    """the count an Apple paddle loop of pass_cycles Apple cycles per pass reaches for CoCo stick value joy
+    (0..63 -> paddle 0..255; the timer runs about 11 Apple cycles per paddle unit), capped at max_count"""
+    return min(max_count, (joy * 255 // 63) * 11 // pass_cycles)
+
+
+def _tab(vals):
+    return ','.join(f'${v:02X}' for v in vals)
+
+
+def prepare_paddle_count(i):
+    p = i.params
+    if p.get('paddle') not in (0, 1, 2, 3):
+        raise ValueError(f'{symbol(i)}: paddle number not constant')
+    mx = p.get('max', 255)
+    store = ['\tsta\tRY'] if p.get('counter', 'y') == 'y' else ['\ttfr\ta,b']
+    regs = dict(p.get('exit_regs', {}))
+    regs.pop(p.get('counter', 'y'), None)
+    pm = dict(p, exit_regs=regs)
+    pmax = dict(p, exit_regs=regs, exit_flags=p.get('exit_flags_max', p.get('exit_flags', {'n': 0, 'z': 1})))
+    return {'JOY': 'joy_y' if p['paddle'] & 1 else 'joy_x', 'STORE': store, 'MAX': mx,
+            'TAB': _tab(paddle_model(j, p['pass_cycles'], mx) for j in range(64)),
+            'EXITREGS': exit_regs(pm), 'EXITREGS_MAX': exit_regs(pmax)}
+
+
+def prepare_rom_pread(i):
+    return {'TAB': _tab(min(255, j * 255 // 63) for j in range(64))}
+
+
+def _wait(a):
+    a = a or 256
+    return (26 + 27 * a + 5 * a * a) // 2
+
+
+def prepare_rom_bell(i):
+    return {'PRE': 2 + _wait(64) + 2, 'PASS': 2 + _wait(12) + 4 + 2 + 3 - BELL_OVA}
+
+
 def render(i):
     subs = {'SYM': [symbol(i)], 'EXIT': exit_lines(i)}
     for k, v in globals()[f'prepare_{i.kind}'](i).items():

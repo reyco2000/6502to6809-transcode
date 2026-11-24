@@ -292,6 +292,76 @@ def g_lib_delay(check):
     return ok
 
 
+# L: LDA $C030 / LDY $06 / M: DEY / BNE M / DEX / BNE L / RTS   (period in $06, duration in X)
+def tone_code(op=0xAD):
+    return bytes([op, 0x30, 0xC0, 0xA4, 0x06, 0x88, 0xD0, 0xFD, 0xCA, 0xD0, 0xF5, 0x60])
+
+
+TONE_PARAMS = dict(period=('zp', 0x06), duration=('x',), inner_pass=5, outer_pass=11, const=-1,
+                   exit_regs={'a': 0, 'x': 0, 'y': 0})
+# LDA $C070 / LDY #0 / L: LDA $C064 / BPL D / INY / BNE L / DEY / D: RTS   (PREAD-like count loop)
+PADDLE_CODE = bytes([0xAD, 0x70, 0xC0, 0xA0, 0x00, 0xAD, 0x64, 0xC0, 0x10, 0x04, 0xC8, 0xD0, 0xF8, 0x88, 0x60])
+PADDLE_PARAMS = dict(paddle=0, counter='y', pass_cycles=11, max=255, exit_regs={'a': 0}, exit_flags={'n': 0, 'z': 1})
+
+
+def run_paddle(idiom, joy, joy_y=0):
+    """the instance's count for a stick position (cc3sim)"""
+    from kit.hw.lib import render_all
+    from kit.hw.idiom import symbol
+    lines = render_all([idiom])
+    drv = ['RYW\tequ\t$FBF0', 'RY\tequ\t$FBF1', 'tstart\tlds\t#$FBE0', '\tclra', '\ttfr\ta,dp', '\tclr\tRYW',
+           f'\tldb\t#${idiom.params.get("paddle", 0):02X}', f'\tjsr\t{symbol(idiom)}', '\tstb\t$FC10', '\tlda\tRY',
+           '\tsta\t$FC11', 'thalt\tbra\tthalt', f'joy_x\tfcb\t{joy}', f'joy_y\tfcb\t{joy_y}', 'rt_vbl\trts']
+    out, _ = sim_run(drv + lines)
+    return out[1] if idiom.params.get('counter', 'y') == 'y' else out[0]
+
+
+@group('lib_io')
+def g_lib_io(check):
+    from kit.hw import Idiom
+    from kit.hw.lib import paddle_model, render_all
+    from kit.hw.verify import difftest_instance
+    ok = True
+    ti = Idiom('tone', 0x0800, 0x080B, params=TONE_PARAMS)
+    per = lambda rnd, ram, a, x, y, p: (a, rnd.choice([0, 1, 2, 30, 80, 200, 255]), y, p)
+    def audible(rnd, ram, a, x, y, p):              # passes of at least ~45 Apple cycles (below ~12 kHz)
+        ram[0x06] = rnd.choice([0] + list(range(8, 256)))
+        return a, x, y, p
+    r = difftest_instance(ti, tone_code(), n=60, setup=audible)
+    ok &= check(f'tone: regs/flags/RAM ({r})', r.passed == r.cases > 0)
+    ok &= check(f'tone: total time ({r.max_timing_err:.4f})', r.timed and r.max_timing_err <= 0.02)
+
+    def p0(rnd, ram, a, x, y, p):
+        ram[0x06] = rnd.choice([0, 1, 2])
+        return a, rnd.choice([0, 1, 2]), y, p
+    r = difftest_instance(ti, tone_code(), n=20, setup=p0, timed=False)
+    ok &= check(f'tone: period/duration 0 = 256, 1, 2 exact ({r})', r.passed == r.cases > 0)
+    ok &= check('paddle_model: extremes', paddle_model(0, 12, 255) == 0 and paddle_model(63, 11, 255) == 255
+                and paddle_model(63, 5, 200) == 200)
+    pi = Idiom('paddle_count', 0x0800, 0x080E, params=PADDLE_PARAMS)
+    ok &= check('paddle_count: count = model',
+                all(run_paddle(pi, j) == paddle_model(j, 11, 255) for j in (0, 1, 31, 32, 63)))
+    pj = Idiom('paddle_count', 0x0800, 0x080E, params=dict(PADDLE_PARAMS, paddle=1))
+    ok &= check('paddle_count: paddle 1 reads joy_y', run_paddle(pj, 0, joy_y=63) == paddle_model(63, 11, 255))
+    zero = lambda lines: ['joy_x\tfcb\t0', 'joy_y\tfcb\t0']
+    r = difftest_instance(pi, PADDLE_CODE, n=30, extra_lines=zero(0), timed=False)
+    ok &= check(f'paddle_count: stick at 0 = the 6502 with timers expired ({r})', r.passed == r.cases > 0)
+    rp = Idiom('rom_pread', 0xFB1E, 0xFB1E)
+    ok &= check('rom_pread: Y from joy', all(run_paddle(rp, j) == min(255, j * 255 // 63) for j in (0, 32, 63)))
+    try:
+        from kit.asm import assemble
+        import tempfile
+        import os
+        assemble(['\tsetdp\t0', '\torg\t$C000', 'RY\tequ\t$F0'] + render_all([Idiom('rom_bell', 0xFF3A, 0xFF3A)]),
+                 os.path.join(tempfile.mkdtemp(), 'b.bin'))
+        bell = True
+    except Exception as x:
+        print('   ', x)
+        bell = False
+    ok &= check('rom_bell: assembles', bell)
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():
