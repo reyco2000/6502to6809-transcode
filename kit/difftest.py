@@ -132,7 +132,7 @@ class Harness:
         if 0xC000 + self.size > 0xFBE0 - 0x100:
             raise RuntimeError(f'test image too big: {self.size}')
 
-    def run(self, ram, label, a, x, y, p, max_instr=3000000):
+    def run(self, ram, label, a, x, y, p, max_instr=3000000, watch=()):
         """-> dict(stop=6502 addr or 'ret' or 'timeout', a, x, y, p6502, ram)"""
         rb = os.path.join(self.wd, 'ram.bin')
         open(rb, 'wb').write(bytes(ram[:0xC000]))
@@ -146,9 +146,9 @@ class Harness:
         r = subprocess.run([SIM, '-l', f'70000:{rb}', '-l', f'7C000:{self.bin}', '-l', f'7FC00:{ib}',
                             '-pc', f'{self.syms["tstart"]:04X}', '-stop', f'{self.syms["thalt"]:04X}',
                             '-max', str(max_instr), '-d', f'70000:C000:{orb}', '-d', f'7FC00:20:{oib}',
-                            '-d', f'7C000:3C00:{ohb}'],
+                            '-d', f'7C000:3C00:{ohb}'] + [w for a in watch for w in ('-w', f'{a:04X}')],
                            capture_output=True, text=True)
-        cyc = re.search(r'cycles=(\d+)', r.stdout)
+        cyc = re.search(r'stop pc=\S+ cycles=(\d+)', r.stdout) or re.search(r'cycles=(\d+)', r.stdout)
         if r.returncode != 0:
             return {'stop': 'timeout', 'cycles': int(cyc.group(1)) if cyc else 0}
         o = open(oib, 'rb').read()
@@ -158,7 +158,9 @@ class Harness:
         return {'stop': 'ret' if stop == 0xFFFF else self.stub_id.get(stop, f'?{stop}'),
                 'a': o[0x10], 'x': o[0x11], 'y': o[0x12], 'p': pf, 'ram': open(orb, 'rb').read(),
                 'hi': open(ohb, 'rb').read(), 'image': self.image,
-                'cycles': int(cyc.group(1))}
+                'cycles': int(cyc.group(1)),
+                'writes': [(int(m.group(1), 16), int(m.group(2), 16), int(m.group(3))) for m in
+                           re.finditer(r'^w ([0-9A-F]{4}) v=([0-9A-F]{2}) cycles=(\d+)$', r.stdout, re.M)]}
 
 
 def untested(coverage, ranges, pcs, mems=(None,)):
@@ -174,7 +176,9 @@ def untested(coverage, ranges, pcs, mems=(None,)):
 
 
 class RefBus:
-    def __init__(self, ram, romconst, rom_writes='wild'):
+    def __init__(self, ram, romconst, rom_writes='wild', io=None):
+        self.io = io            # optional I/O model: read(addr, cycles) -> byte, write(addr, value, cycles)
+        self.cpu = None
         self.ram = bytearray(ram[:0xC000]) + bytearray(0x4000)
         self.romconst = romconst
         self.wild = False       # touched ROM the port does not model (random inputs sent a pointer there)
@@ -190,7 +194,7 @@ class RefBus:
         if 0xC000 <= a <= 0xC0FF:
             if self.indirect:
                 self.wild = True
-            return 0
+            return self.io.read(a, self.cpu.cycles) if self.io is not None else 0
         if a >= 0xC000:
             if a not in self.romconst:
                 self.wild = True
@@ -198,6 +202,8 @@ class RefBus:
         return self.ram[a]
 
     def write(self, a, v):
+        if self.io is not None and 0xC000 <= a <= 0xC0FF:
+            self.io.write(a, v, self.cpu.cycles)
         if a < 0xC000:
             self.ram[a] = v
         elif a >= 0xC100:
@@ -211,7 +217,7 @@ _ZPIDX = None
 
 
 def reference(ram, entry, a, x, y, p, inside, romconst, max_instr=300000, pcs=None, rom_writes='wild',
-              wrapsafe=None):
+              wrapsafe=None, io=None):
     """run the 6502 from entry until the PC leaves `inside` (a set) or returns to the sentinel.
     pcs: a set that collects every executed instruction address (path coverage of a test, see untested())
     rom_writes: see RefBus ('ignore' for native tests: the result's 'romw' lists the dropped ROM writes)
@@ -223,8 +229,9 @@ def reference(ram, entry, a, x, y, p, inside, romconst, max_instr=300000, pcs=No
         from . import opcodes
         _ZPIDX = {op: (1 if md == 'zpx' else 2) for op, (mn, md) in opcodes.OPS.items() if md in ('zpx', 'zpy')}
     from .host.cpu6502 import CPU6502, IllegalOpcode
-    bus = RefBus(ram, romconst, rom_writes)
+    bus = RefBus(ram, romconst, rom_writes, io)
     c = CPU6502(bus)
+    bus.cpu = c
     r = SENTINEL - 1
     bus.ram[0x1FF], bus.ram[0x1FE] = r >> 8, r & 0xFF
     c.s, c.pc, c.a, c.x, c.y, c.p = 0xFD, entry, a, x, y, (p & 0xC3) | 0x24

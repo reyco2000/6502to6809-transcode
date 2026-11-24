@@ -107,9 +107,9 @@ def prepare_delay(i):
             'INNER_PASS': ip, 'OUTER_PASS': op, 'SUB': sub, 'EXITREGS': exit_regs(p)}
 
 
-TONE_FIX = 86              # CoCo cycles of one tone pass outside its 8-cycle loop (calibrated by tests/hw_checks.py)
-TONE_SETUP = 22            # tone setup cost in 8-cycle units, taken off its first pass (calibrated)
-BELL_OVA = 26              # rom_bell: its own cost per click in Apple cycles (calibrated)
+TONE_FIX = 74              # CoCo cycles of one tone pass outside its 8-cycle loop (calibrated by tests/hw_checks.py)
+TONE_MIN_PASS = 50         # shortest tone pass the routine reproduces, in Apple cycles (TONE_FIX / 1.75)
+BELL_OVA = 7              # rom_bell: its own cost per click in Apple cycles (calibrated)
 
 
 def prepare_tone(i):
@@ -118,7 +118,7 @@ def prepare_tone(i):
     if 256 * ip + op > 9362:
         raise ValueError(f'{symbol(i)}: tone pass too long')
     return {'LOAD_DURATION': load(p['duration']), 'LOAD_PERIOD': load(p['period']), 'INNER_PASS': ip,
-            'OUTER_PASS': op, 'FIX': TONE_FIX, 'SETUP': TONE_SETUP, 'EXITREGS': exit_regs(p)}
+            'OUTER_PASS': op, 'FIX': TONE_FIX, 'EXITREGS': exit_regs(p)}
 
 
 def paddle_model(joy, pass_cycles, max_count):

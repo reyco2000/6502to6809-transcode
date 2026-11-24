@@ -89,7 +89,7 @@ def g_iocheck(check):
     return ok
 
 
-def sim_run(lines, out_len=0x20):
+def sim_run(lines, out_len=0x20, watch=()):
     """assemble `lines` (raw, org $C000 is added; must define tstart and thalt) and run them in cc3sim;
     -> the bytes at $FC10.. (out_len) and the cycle count"""
     import os
@@ -102,11 +102,17 @@ def sim_run(lines, out_len=0x20):
     b, s, o = (os.path.join(wd, n) for n in ('t.bin', 't.sym', 'o.bin'))
     assemble(['\tpragma\tnoautobranchlength', '\tsetdp\t0', '\torg\t$C000'] + list(lines), b, symbols=s)
     sym = {m.group(1): int(m.group(2), 16) for m in (re.match(r'(\S+) EQU \$([0-9A-F]+)', ln) for ln in open(s)) if m}
+    w = [x for a in watch for x in ('-w', f'{a:04X}')]
     r = subprocess.run([SIM, '-l', f'7C000:{b}', '-pc', f'{sym["tstart"]:04X}', '-stop', f'{sym["thalt"]:04X}',
-                        '-max', '2000000', '-d', f'7FC10:{out_len:X}:{o}'], capture_output=True, text=True)
+                        '-max', '20000000', '-d', f'7FC10:{out_len:X}:{o}'] + w, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f'cc3sim: {r.stdout} {r.stderr}')
-    return open(o, 'rb').read(), int(re.search(r'cycles=(\d+)', r.stdout).group(1))
+    cyc = int(re.search(r'stop pc=\S+ cycles=(\d+)', r.stdout).group(1))
+    if watch:
+        writes = [(int(m.group(1), 16), int(m.group(2), 16), int(m.group(3)))
+                  for m in re.finditer(r'^w ([0-9A-F]{4}) v=([0-9A-F]{2}) cycles=(\d+)$', r.stdout, re.M)]
+        return open(o, 'rb').read(), cyc, writes
+    return open(o, 'rb').read(), cyc
 
 
 IOV_EQU = ['IOV\tequ\t$FB00', 'v_dpage\tequ\t$FB01', 'vbl_over\tequ\t$FB02']
@@ -329,7 +335,8 @@ def g_lib_io(check):
         return a, x, y, p
     r = difftest_instance(ti, tone_code(), n=60, setup=audible)
     ok &= check(f'tone: regs/flags/RAM ({r})', r.passed == r.cases > 0)
-    ok &= check(f'tone: total time ({r.max_timing_err:.4f})', r.timed and r.max_timing_err <= 0.02)
+    # tone timing is checked on the click intervals (group verify), not the total time: the routine's setup
+    # (~100 Apple cycles before the first click) is not taken off the first period
 
     def p0(rnd, ram, a, x, y, p):
         ram[0x06] = rnd.choice([0, 1, 2])
@@ -494,6 +501,65 @@ def g_survey_idioms(check):
     survey.report(cov, s, out)
     ok &= check('survey: near-miss reported', 'multi-voice' in out.getvalue().split('## 7.')[1])
     ok &= check('survey: near-miss routine stays a native candidate', 'n_tone_0800' in survey.draft_spec(cov, s))
+    return ok
+
+
+@group('verify')
+def g_verify(check):
+    from kit.hw import Idiom
+    from kit.hw.lib import render_all
+    from kit.hw.verify import verify
+    from kit.hw.match import Match
+    ok = True
+    _, _, w = sim_run(['tstart\tlda\t#1', '\tsta\t$FF20', '\tnop', '\tsta\t$FF20', 'thalt\tbra\tthalt'], watch=(0xFF20,))
+    ok &= check(f'cc3sim -w logs writes ({w})', len(w) == 2 and w[0][:2] == (0xFF20, 1) and w[1][2] - w[0][2] == 7)
+
+    def mem_with(code, org=0x0800):
+        m = bytearray(0x10000)
+        m[org:org + len(code)] = code
+        return m
+    tm = find_in(tone_code())[0][0]
+    ev = verify(tm, mem_with(tone_code()), n=40)
+    ok &= check(f'verify: tone passes with period timing ({ev})', ev.passed == ev.cases > 0 and ev.timed
+                and ev.max_timing_err <= 0.02)
+    from kit.hw import lib
+    bad = [ln.replace('\tldx\thw_tone_0800_k', '\tldx\thw_tone_0800_k\n\tleax\t3,x')   # +24 cycles a pass
+           for ln in render_all([tm.idiom])]
+    assert any('leax\t3,x' in ln for ln in bad)
+    bad = [x for ln in bad for x in ln.split('\n')]
+    ev = verify(tm, mem_with(tone_code()), n=20, render_lines=bad)
+    ok &= check(f'verify: wrong timing is caught ({ev})', ev.max_timing_err > 0.02)
+    pm = find_in(PADDLE_CODE)[0][0]
+    ev = verify(pm, mem_with(PADDLE_CODE), n=40)
+    ok &= check(f'verify: paddle count = Apple timer model ({ev})', ev.passed == ev.cases > 0)
+    vm = find_in(bytes([0xAD, 0x19, 0xC0, 0x30, 0xFB, 0x60]))[0][0]
+    ev = verify(vm, mem_with(bytes([0xAD, 0x19, 0xC0, 0x30, 0xFB, 0x60])), n=20)
+    ok &= check(f'verify: vbl_poll with a blank model ({ev})', ev.passed == ev.cases > 0)
+    dm = find_in(DELAY_XZ)[0][0]
+    ev = verify(dm, mem_with(DELAY_XZ), n=30)
+    ok &= check(f'verify: delay ({ev})', ev.passed == ev.cases > 0 and ev.max_timing_err <= 0.02)
+    bell = Idiom('rom_bell', 0xFF3A, 0xFF3A)
+    lines = ['RY\tequ\t$FBF1', 'tstart\tlds\t#$FBE0', '\tjsr\thw_rom_bell_ff3a', 'thalt\tbra\tthalt'] + \
+        render_all([bell])
+    _, cyc, w = sim_run(lines, watch=(0xFF20,))
+    per = [b[2] - a[2] for a, b in zip(w, w[1:])]
+    want = lib._wait(12) + 2 + 4 + 2 + 3
+    ok &= check(f'rom_bell: 192 DAC writes, {sum(per) / len(per) / 1.75:.0f} Apple cycles apart (want {want})',
+                len(w) == 192 and abs(sum(per) / len(per) / (want * 1.75) - 1) <= 0.02)
+    import json
+    import io as _io
+    import tempfile
+    import os
+    from contextlib import redirect_stdout
+    from kit import survey
+    d = tempfile.mkdtemp(prefix='hwck_')
+    cp = os.path.join(d, 'cov.json')
+    json.dump(synth_cov(tone_code()), open(cp, 'w'))
+    out = _io.StringIO()
+    with redirect_stdout(out):
+        survey.main(['--coverage', cp, '--verify', '8', '--spec-out', os.path.join(d, 'draft.py')])
+    ok &= check('survey --verify: evidence in section 7 and the draft', 'verified 8/8' in out.getvalue().split('## 7.')[1]
+                and 'verified 8/8' in open(os.path.join(d, 'draft.py')).read())
     return ok
 
 

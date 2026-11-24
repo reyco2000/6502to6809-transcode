@@ -45,10 +45,6 @@
 	lsra
 	rorb
 	std	@SYM@_k
-	subd	#@SETUP@		; the first pass also pays for this setup
-	bcc	@SYM@_p3
-	ldd	#0
-@SYM@_p3	std	@SYM@_x0
 	lda	@SYM@_f
 	anda	#7
 	sta	@SYM@_f			; fraction (eighths)
@@ -56,7 +52,7 @@
 @SYM@_lp	lda	$FF20			; click
 	eora	#$FC
 	sta	$FF20
-	ldx	@SYM@_x0
+	ldx	@SYM@_k
 	lda	@SYM@_a
 	adda	@SYM@_f
 	cmpa	#8
@@ -74,9 +70,7 @@
 	beq	@SYM@_dz
 @SYM@_dw	leax	-1,x
 	bne	@SYM@_dw
-@SYM@_dz	ldd	@SYM@_k			; later passes: the full count
-	std	@SYM@_x0
-	ldd	@SYM@_n
+@SYM@_dz	ldd	@SYM@_n
 	subd	#1
 	std	@SYM@_n
 	bne	@SYM@_lp
@@ -86,6 +80,5 @@
 @SYM@_ea	rmb	1
 @SYM@_n	rmb	2
 @SYM@_k	rmb	2
-@SYM@_x0	rmb	2
 @SYM@_f	rmb	1
 @SYM@_a	rmb	1

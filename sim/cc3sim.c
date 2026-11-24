@@ -3,10 +3,12 @@
  * No video/timing; for unit-testing runtime routines.
  *
  *   cc3sim [-l PHYSHEX:file]... [-m SLOT:BLOCK]... -pc ADDR -stop ADDR [-max N]
- *          [-d PHYSHEX:LEN:file]... [-at ADDR]...
+ *          [-d PHYSHEX:LEN:file]... [-at ADDR]... [-w ADDR]...
  * Default task-0 map: slots 0-7 = blocks $38-$3F (as after CoCo 3 reset).
  * Prints the cycle count between start and stop.  -at ADDR (up to 16): print "at ADDR cycles=N s6=BB" each
  * time the PC reaches ADDR (at most 200 lines; s6 = task-0 slot-6 block, to tell code banks apart).
+ * -w ADDR (up to 8, CPU addresses): print "w ADDR v=VV cycles=N" for each write there (at most 20000 lines;
+ * N = cycles at the start of the writing instruction), e.g. -w FF20 to time speaker clicks on the DAC.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +18,8 @@
 static uint8_t ram[512 * 1024];
 static uint8_t io[256];
 static uint8_t mmu[16];
+static unsigned wat[8], nwat, nwp;
+static const uint64_t *cyc_now;
 
 static unsigned phys(uint16_t a)
 {
@@ -38,6 +42,11 @@ static uint8_t rd(void *ctx, uint16_t a)
 static void wr(void *ctx, uint16_t a, uint8_t v)
 {
     (void)ctx;
+    for (unsigned k = 0; k < nwat; k++)
+        if (a == wat[k] && nwp < 20000) {
+            printf("w %04X v=%02X cycles=%llu\n", a, v, (unsigned long long)*cyc_now);
+            nwp++;
+        }
     if (a >= 0xFF00) {
         if (a >= 0xFFA0 && a <= 0xFFAF) mmu[a - 0xFFA0] = v;
         else io[a & 0xFF] = v;
@@ -65,9 +74,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-stop")) stop = strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "-max")) max = strtoull(argv[++i], 0, 10);
         else if (!strcmp(argv[i], "-at") && nat < 16) at[nat++] = strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "-w") && nwat < 8) wat[nwat++] = strtoul(argv[++i], 0, 16);
     }
     mc6809 c; memset(&c, 0, sizeof c);
     c.read = rd; c.write = wr; c.pc = pc; c.s = 0xFDFF; c.cc = 0x50;
+    cyc_now = &c.cycles;
     unsigned long long n = 0;
     while (c.pc != stop && n < max) {
         for (unsigned k = 0; k < nat; k++)

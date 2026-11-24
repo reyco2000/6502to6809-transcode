@@ -35,7 +35,7 @@ def suggestion(action):
     if isinstance(action, Trap):
         return f'TRAP: {action.reason}'
     if isinstance(action, IdiomOnly):
-        return f"idiom: {', '.join(action.kinds)} (proposed in section 7)"
+        return f"idiom: {', '.join(action.kinds)} (see section 7)"
     return str(action)
 
 
@@ -201,6 +201,20 @@ def idioms(images):
     return sorted(props.values(), key=lambda v: v[0].idiom.entry), sorted(nears.values(), key=lambda v: v[0].lo)
 
 
+def verify_idioms(s, images, n):
+    """attach difftest evidence (kit/hw/verify.py) to every proposal, on the first image it was found in"""
+    from .hw.verify import verify
+    from .paths import SIM
+    if not os.path.exists(SIM):
+        raise SystemExit(f'--verify needs the simulator: make -C {os.path.dirname(SIM)}')
+    byid = {im.id: im for im in images}
+    for m, ids in s.get('matches', []):
+        im = byid[ids[0]]
+        mem = bytearray(0x10000)
+        mem[im.base:im.base + len(im.bytes)] = im.bytes
+        m.evidence.append(str(verify(m, mem, n)))
+
+
 def idiom_line(m, ids, comment=True):
     """one draft-spec line for a proposal"""
     i = m.idiom
@@ -212,7 +226,8 @@ def idiom_line(m, ids, comment=True):
     return f'#   {s}   # {note}' if comment else s
 
 
-def report(cov, s, out=sys.stdout):
+def report(cov, s, out=None):
+    out = out or sys.stdout
     p = lambda *a: print(*a, file=out)
     summ = cov.get('summary', {})
     p(f"# Survey  ({summ.get('runs', '?')} run(s), {summ.get('frames', '?')} frames, "
@@ -364,6 +379,8 @@ def main(argv=None):
     ap.add_argument('--coverage', help='coverage JSON (default: port.toml coverage)')
     ap.add_argument('--top', type=int, default=25)
     ap.add_argument('--spec-out', help='write a draft spec.py here')
+    ap.add_argument('--verify', nargs='?', type=int, const=300, metavar='N',
+                    help='test every proposed hardware idiom against its 6502 code on N random cases (needs sim/cc3sim)')
     a = ap.parse_args(argv)
     path = a.coverage
     if not path:
@@ -371,6 +388,8 @@ def main(argv=None):
         path = load_port(a.port).coverage
     cov, images = load(path)
     s = survey(cov, images, a.top)
+    if a.verify:
+        verify_idioms(s, images, a.verify)
     report(cov, s)
     if a.spec_out:
         open(a.spec_out, 'w').write(draft_spec(cov, s))
