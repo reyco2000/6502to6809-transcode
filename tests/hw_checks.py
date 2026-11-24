@@ -362,6 +362,59 @@ def g_lib_io(check):
     return ok
 
 
+def find_in(code, org=0x0800):
+    """run the idiom matchers over synthetic 6502 code at org -> (matches, near-misses)"""
+    from kit.discover import discover
+    from kit.hw.match import find
+    mem = bytearray(0x10000)
+    mem[org:org + len(code)] = code
+    c = discover(mem, [org], {}, code_ranges=((org, org + 0xFF),))
+    return find(mem, c)
+
+
+def kinds(res):
+    return [m.idiom.kind for m in res[0]]
+
+
+def near(res, text):
+    return any(text in n.reason for n in res[1])
+
+
+@group('match')
+def g_match(check):
+    ok = True
+    r = find_in(bytes([0xAD, 0x19, 0xC0, 0x10, 0xFB, 0x60]))
+    ok &= check('match: vbl poll', kinds(r) == ['vbl_poll'] and r[0][0].idiom.exits == (0x0805,)
+                and r[0][0].idiom.params == {'exit_n': 1, 'keep_a': 0})
+    r = find_in(bytes([0x2C, 0x19, 0xC0, 0x30, 0xFB, 0x60]))
+    ok &= check('match: vbl poll BIT/BMI', kinds(r) == ['vbl_poll'] and r[0][0].idiom.params == {'exit_n': 0, 'keep_a': 1})
+    r = find_in(bytes([0xAD, 0x19, 0xC0, 0x30, 0xFB, 0xAD, 0x19, 0xC0, 0x10, 0xFB, 0x60]))
+    ok &= check('match: paired vbl loops are one idiom', kinds(r) == ['vbl_poll'] and r[0][0].idiom.end == 0x0809
+                and r[0][0].idiom.exits == (0x080A,) and r[0][0].idiom.params['exit_n'] == 1)
+    r = find_in(DELAY_00)
+    ok &= check('match: nested delay', kinds(r) == ['delay'] and r[0][0].idiom.params['exit_regs'] == {'x': 0, 'y': 0}
+                and (r[0][0].idiom.entry, r[0][0].idiom.end) == (0x0800, 0x0809))
+    p = r[0][0].idiom.params if r[0] else {}
+    ok &= check('match: nested delay cost formula', (p.get('outer'), p.get('inner'), p.get('inner_pass'),
+                p.get('outer_pass'), p.get('const')) == (('imm', 0), ('imm', 0), 5, 6, 1))
+    r = find_in(DELAY_XZ)
+    p = r[0][0].idiom.params if r[0] else {}
+    ok &= check('match: delay with counts from X and zero page', kinds(r) == ['delay'] and p.get('outer') == ('x',)
+                and p.get('inner') == ('zp', 0x10) and p.get('outer_pass') == 7 and p.get('const') == -1)
+    r = find_in(bytes([0xA2, 0x00, 0x9D, 0x00, 0x30, 0xCA, 0xD0, 0xFA, 0x60]))
+    ok &= check('match: delay writing RAM is a near-miss', kinds(r) == [] and near(r, 'writes memory'))
+    r = find_in(bytes([0xA9, 0x40, 0x20, 0xA8, 0xFC, 0x60]))
+    ok &= check('match: JSR WAIT', kinds(r) == ['rom_wait'] and r[0][0].idiom.entry == 0xFCA8)
+    r = find_in(bytes([0x20, 0xA8, 0xFC, 0x20, 0xA8, 0xFC, 0x60]))
+    ok &= check('match: one proposal per ROM entry', kinds(r) == ['rom_wait'])
+    ok &= check('match: short loop is not a delay', kinds(find_in(bytes([0xA2, 0x03, 0xCA, 0xD0, 0xFD, 0x60]))) == [])
+    from kit.hw.verify import difftest_instance
+    r = find_in(DELAY_XZ)
+    ev = difftest_instance(r[0][0].idiom, DELAY_XZ, n=40) if r[0] else None
+    ok &= check(f'match: proposed delay passes its difftest ({ev})', ev is not None and ev.passed == ev.cases > 0)
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():
