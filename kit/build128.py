@@ -181,6 +181,8 @@ def build(out_dsk, verbose=True, plain=False):
     nat_src = []
     for f in spec.NATIVE_SRC(128):
         nat_src += src(f)
+    if os.path.exists(os.path.join(sdir, 'hw_inst.asm')):     # accepted hardware idioms (spec HW_IDIOMS)
+        nat_src += [ln for ln in src(os.path.join(sdir, 'hw_inst.asm')) if ln.strip()]
     xiy = src(os.path.join(sdir, 'xiy.asm'))
     import re
     from .hw import iocheck

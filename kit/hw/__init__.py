@@ -75,3 +75,6 @@ def lookup_in(table, addr, mode, overrides=None):
             return Hw(addr, addr, f'${addr:04X} (spec override)', 'override', overrides[addr], frozenset({mode}))
         return replace(hit, action=overrides[addr])
     return hit
+
+
+from .idiom import Idiom  # noqa: E402,F401  (specs: from kit.hw import Idiom)

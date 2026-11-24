@@ -192,6 +192,71 @@ def g_docs(check):
     return ok
 
 
+# monitor WAIT ($FCA8), written out from its documented source: SEC / W2: PHA / W3: SBC #1 / BNE W3 / PLA /
+# SBC #1 / BNE W2 / RTS  (code, not ROM bytes)
+WAIT_6502 = bytes([0x38, 0x48, 0xE9, 0x01, 0xD0, 0xFC, 0x68, 0xE9, 0x01, 0xD0, 0xF6, 0x60])
+
+
+def raises(exc, fn, *a):
+    try:
+        fn(*a)
+    except exc:
+        return True
+    return False
+
+
+@group('idiom')
+def g_idiom(check):
+    import types
+    from kit.asm import assemble, AsmError
+    from kit.hw import Idiom
+    from kit.hw.idiom import expand, symbol
+    from kit.hw.lib import render_all
+    from kit.hw.verify import difftest_instance
+    import tempfile
+    import os
+    ok = True
+    S = types.SimpleNamespace(NATIVE={}, NATIVE_RANGES=[], NATIVE_EXITS=[],
+                              HW_IDIOMS=[Idiom('vbl_poll', 0x0900, 0x0905, (0x0906,))])
+    expand(S)
+    expand(S)
+    ok &= check('idiom: expand', S.NATIVE == {0x0900: 'hw_vbl_poll_0900'} and S.NATIVE_RANGES == [(0x0900, 0x0905)]
+                and S.NATIVE_EXITS == [0x0906] and symbol(S.HW_IDIOMS[0]) == 'hw_vbl_poll_0900')
+    S2 = types.SimpleNamespace(NATIVE={0x0902: 'x'}, NATIVE_RANGES=[(0x0902, 0x0910)], NATIVE_EXITS=[],
+                               HW_IDIOMS=[Idiom('vbl_poll', 0x0900, 0x0905)])
+    ok &= check('idiom: overlap with a native refused', raises(SystemExit, expand, S2))
+    S3 = types.SimpleNamespace(NATIVE={}, NATIVE_RANGES=[], NATIVE_EXITS=[],
+                               HW_IDIOMS=[Idiom('vbl_poll', 0x0900, 0x0905), Idiom('delay', 0x0904, 0x0910)])
+    ok &= check('idiom: overlapping idioms refused', raises(SystemExit, expand, S3))
+    S4 = types.SimpleNamespace(NATIVE={}, NATIVE_RANGES=[], NATIVE_EXITS=[], HW_IDIOMS=[Idiom('nonsense', 0x900, 0x905)])
+    ok &= check('idiom: unknown kind refused', raises(SystemExit, expand, S4))
+    S5 = types.SimpleNamespace(NATIVE={}, NATIVE_RANGES=[], NATIVE_EXITS=[], HW_IDIOMS=[Idiom('rom_wait', 0xFCA8, 0xFCA8)])
+    expand(S5)
+    from kit.xc65 import A_, FLAGS
+    c = S5.NATIVE_CONTRACTS.get('hw_rom_wait_fca8')
+    ok &= check('idiom: ROM entry gets a contract', c is not None and c.use == A_ and c.defs == A_ | FLAGS)
+    two = render_all([Idiom('rom_wait', 0xFCA8, 0xFCA8), Idiom('rom_wait', 0x0900, 0x090B)])
+    d = tempfile.mkdtemp(prefix='hwck_')
+    try:
+        assemble(['\tsetdp\t0', '\torg\t$C000', 'RY\tequ\t$F0', 'rt_vbl\trts'] + two, os.path.join(d, 'a.bin'))
+        asm_ok = True
+    except AsmError as x:
+        print('   ', x)
+        asm_ok = False
+    ok &= check('idiom: two instances assemble', asm_ok)
+    r = difftest_instance(Idiom('rom_wait', 0x0800, 0x080B), WAIT_6502, n=100)
+    ok &= check(f'idiom: rom_wait vs 6502 WAIT ({r})', r.passed == r.cases > 0)
+    ok &= check(f'idiom: rom_wait timing ({r.max_timing_err:.3f})', r.max_timing_err <= 0.02)
+    vb = bytes([0xAD, 0x19, 0xC0, 0x30, 0xFB, 0x60])          # L: LDA $C019 / BMI L / RTS
+    r = difftest_instance(Idiom('vbl_poll', 0x0800, 0x0804, (0x0805,), params={'exit_n': 0}), vb, n=50)
+    ok &= check(f'idiom: vbl_poll vs 6502 loop ({r})', r.passed == r.cases > 0)
+    vb = bytes([0x2C, 0x19, 0xC0, 0x30, 0xFB, 0x60])          # L: BIT $C019 / BMI L / RTS (A kept)
+    r = difftest_instance(Idiom('vbl_poll', 0x0800, 0x0804, (0x0805,), params={'exit_n': 0, 'keep_a': 1}), vb, n=50,
+                          live=0x3F & ~0x10)                   # Z after BIT depends on A AND the floating bus
+    ok &= check(f'idiom: vbl_poll BIT keeps A ({r})', r.passed == r.cases > 0)
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():

@@ -46,6 +46,7 @@
 | `HW_OVERRIDES` | `{$C0xx: action}` (`from kit.hw import Ignore, Latch, Runtime`): replaces the hardware map's action for one address (`kit/hw/apple2.py`). Generation fails on any access whose action is a trap, loop-only or unmapped; an override is how a port accepts one, for example `{0xC05E: Ignore()}` when a game sets AN3 but never shows double hi-res. |
 | `ROMCONST` | `{ROM address: byte}` for ROM data the game reads. |
 | `NATIVE_CONTRACTS` | `{symbol: Native(sym, use, defs, noreturn)}` for natives with no 6502 body (ROM entries) or that never return. |
+| `HW_IDIOMS` | `[Idiom(kind, entry, end, exits=(), params={}, image=None)]` (`from kit.hw import Idiom`): hardware idioms you accepted from the survey's proposals (section 7 of `survey.txt`, commented out in `draft_spec.py`). Each becomes `NATIVE[entry] = hw_<kind>_<entry>` with its range and exits; the routine is rendered from `rt/hw/apple2/<kind>.asm` into `build/src/hw_inst.asm`. Kinds: `vbl_poll`, `rom_wait`, `delay`, `tone`, `paddle_count`, `rom_pread`, `rom_bell`. An overlap with another native or idiom is an error. |
 
 ## spec.py: build hooks
 

@@ -16,7 +16,7 @@ import sys
 
 from .program import split
 from . import hw
-from .hw import apple2 as hw_apple2, iocheck
+from .hw import apple2 as hw_apple2, iocheck, lib as hw_lib, idiom as hw_idiom
 from .xc65 import Ctx, Native, translate, xiy_helpers, XError, routine_contract, REGS, FLAGS, ALL, A_, X_, Y_  # noqa: F401
 
 IO = {}
@@ -34,6 +34,7 @@ def use(port_spec):
     """select the port whose spec module drives the generator"""
     global spec, IO_MEM, ROMCONST, NATIVE_CONTRACTS, HW_OVERRIDES
     spec = port_spec
+    hw_idiom.expand(spec)                            # accepted idioms (spec HW_IDIOMS) become natives
     HW_OVERRIDES = dict(getattr(spec, 'HW_OVERRIDES', {}))
     IO_MEM = dict(getattr(spec, 'IO_MEM', IO_MEM_DEFAULT))
     for a, act in HW_OVERRIDES.items():                # an override to a latch is a plain load too
@@ -208,6 +209,8 @@ def build(outdir, comments=True):
                 stubs += [f'{pf}T{a:04X}\tjsr\tx_trap', f'\tfdb\t${a:04X}']
         open(os.path.join(outdir, f'ovl_{n}.asm'), 'w').write('\n'.join(vt + stubs + lines) + '\n')
         rep.append(f'{n}: {len(ov.insns)} insns -> {len(lines)} lines')
+    open(os.path.join(outdir, 'hw_inst.asm'), 'w').write(     # accepted hardware idioms (kit/hw/lib.py)
+        '\n'.join(hw_lib.render_all(getattr(spec, 'HW_IDIOMS', ()))) + '\n')
     open(os.path.join(outdir, 'ovt.inc'), 'w').write(
         '\n'.join(f'OVT_{a:04X}\tequ\tOVBASE+{3 * k}' for k, a in enumerate(slots)) + '\n')
     open(os.path.join(outdir, 'xiy.asm'), 'w').write('\n'.join(xiy_helpers(ptrs) + romdata_lines()) + '\n')
