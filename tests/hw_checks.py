@@ -43,6 +43,19 @@ def g_map(check):
     return ok
 
 
+@group('survey')
+def g_survey(check):
+    from kit import survey
+    ok = True
+    ok &= check('survey: speaker via map', survey.softsw(0xC030)[2] == 'runtime')
+    ok &= check('survey: Disk II slot', survey.softsw(0xC08C, 'absx')[2].startswith('TRAP'))
+    ok &= check('survey: paddle idiom', survey.softsw(0xC064)[2].startswith('idiom'))
+    ok &= check('survey: write side used for stores', survey.softsw(0xC000, 'abs', 'STA')[2].startswith('TRAP')
+                and survey.softsw(0xC000, 'abs', 'LDA')[2] == 'runtime')
+    ok &= check('survey: no SOFTSW table left', not hasattr(survey, 'SOFTSW') and not hasattr(survey, 'ROM_KNOWN'))
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():

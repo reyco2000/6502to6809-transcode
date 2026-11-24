@@ -15,34 +15,29 @@ import os
 import sys
 
 from .opcodes import OPS, MODE_LEN
+from .hw import apple2 as hw
+from .hw import Runtime, Latch, Ignore, Trap, IdiomOnly
 
 # ---------------------------------------------------------------------------------------------- Apple II surface
 EA_BITS = {'zp': 1, 'stack': 2, 'ram0': 4, 'hires': 8, 'ram6': 16, 'io': 32, 'rom': 64}   # kit/host/profile.py
 
-SOFTSW = [  # (lo, hi, name, category, suggested native from docs/NATIVES.md)
-    (0xC019, 0xC019, 'RDVBL (IIe vertical blank)', 'vbl', 'nt_vbl (GIME field sync)'),
-    (0xC000, 0xC00F, 'KBD (keyboard data / IIe switches on write)', 'keyboard', 'kbd_read (rt/natives/apple2/kbd.asm)'),
-    (0xC010, 0xC01F, 'KBDSTRB / IIe status reads', 'keyboard', 'kbd_strobe'),
-    (0xC020, 0xC02F, 'cassette out', 'sound', 'ignore'),
-    (0xC030, 0xC03F, 'SPKR (speaker toggle)', 'sound', 'snd_* DAC player: replace the whole cycle-timed loop'),
-    (0xC050, 0xC057, 'video mode / page switches (TXTCLR..HIRES)', 'video', 'vm_page / vconv (rt vid converter)'),
-    (0xC058, 0xC05F, 'annunciators / IIe DHR switch', 'video', 'check: AN3 = double hi-res'),
-    (0xC060, 0xC063, 'push buttons / cassette in', 'joystick', 'joy_buttons'),
-    (0xC064, 0xC067, 'paddle timers', 'joystick', 'nj_paddle: replace the count loop'),
-    (0xC070, 0xC070, 'PTRIG (paddle trigger)', 'joystick', 'nj_paddle'),
-    (0xC080, 0xC08F, 'language card banking', 'memory', 'map in the GIME MMU, or a native bank switch'),
-    (0xC090, 0xC0FF, 'slot I/O (Disk II = $C0E0-$C0EF in slot 6)', 'disk', 'native stage loader (DSKCON / dstream)'),
-    (0xC100, 0xCFFF, 'slot ROM / expansion ROM', 'rom', 'native'),
-]
-ROM_KNOWN = {  # monitor / firmware entry points a game commonly calls
-    0xFCA8: ('WAIT', 'timing', 'nt_wait'), 0xFC58: ('HOME', 'text', 'native text clear'),
-    0xFDED: ('COUT', 'text', 'native text out'), 0xFDF0: ('COUT1', 'text', 'native text out'),
-    0xFD0C: ('RDKEY', 'keyboard', 'kbd_read loop'), 0xFD1B: ('KEYIN', 'keyboard', 'kbd_read loop'),
-    0xFB1E: ('PREAD', 'joystick', 'nj_paddle'), 0xFBDD: ('BELL1', 'sound', 'snd beep'),
-    0xFF3A: ('BELL', 'sound', 'snd beep'), 0xFE89: ('SETKBD', 'init', 'drop'), 0xFE93: ('SETVID', 'init', 'drop'),
-    0xFB2F: ('INIT', 'init', 'drop'), 0xF3E2: ('HGR', 'video', 'native clear'), 0xF3D8: ('HGR2', 'video', 'native clear'),
-    0xC600: ('Disk II boot', 'disk', 'native loader'), 0xC65C: ('Disk II read sector', 'disk', 'native loader'),
-}
+# the hardware surface (soft switches, firmware entry points) comes from the hardware map: kit/hw/apple2.py
+STORES = {'STA', 'STX', 'STY'}
+RMW_IO = {'ASL', 'LSR', 'ROL', 'ROR', 'INC', 'DEC'}
+
+
+def suggestion(action):
+    """what the hardware map says to do with an access (survey wording)"""
+    if isinstance(action, (Runtime, Latch)):
+        return 'runtime'
+    if isinstance(action, Ignore):
+        return 'ignored'
+    if isinstance(action, Trap):
+        return f'TRAP: {action.reason}'
+    if isinstance(action, IdiomOnly):
+        return f"idiom: {', '.join(action.kinds)} (proposed in section 7)"
+    return str(action)
+
 
 # base cycles (NMOS 6502), by mode, with the exceptions below
 MODE_CYC = {'imp': 2, 'acc': 2, 'imm': 2, 'zp': 3, 'zpx': 4, 'zpy': 4, 'abs': 4, 'absx': 4, 'absy': 4,
@@ -63,13 +58,22 @@ def cycles(op):
     return c
 
 
-def softsw(a, mode='abs'):
-    if mode in ('absx', 'absy') and 0xC080 <= a <= 0xC08F:      # $C08x,X with X = slot*16: slot I/O (Disk II)
-        return f'slot I/O ${a:04X}+slot*16 (Disk II: $C08C = data latch)', 'disk', 'native stage loader (DSKCON / dstream)'
-    for lo, hi, name, cat, nat in SOFTSW:
-        if lo <= a <= hi:
-            return name, cat, nat
-    return None
+def softsw(a, mode='abs', mn=None):
+    """-> (name, category, suggestion) for an access to a soft switch / I/O address, or None outside the map.
+    mode: the 6502 addressing mode (abs,X / abs,Y = indexed: $C08x,X is slot I/O); mn: the mnemonic (stores and
+    read-modify-writes use the write side of the map)"""
+    idx = 'x' if mode in ('absx', 'absy') else ''
+    side = 'wr' if mn in STORES or mn in RMW_IO else 'rd'
+    e = hw.lookup(a, side + idx)
+    if e is None:
+        return None
+    return e.name, e.cat, suggestion(e.action)
+
+
+def rom_entry(a):
+    """-> (name, category, suggestion) for a firmware entry point, or None"""
+    e = hw.rom(a)
+    return (e.name, e.cat, suggestion(e.action)) if e else None
 
 
 # ---------------------------------------------------------------------------------------------- coverage helpers
@@ -163,7 +167,7 @@ def survey(cov, images, top=25):
             if m & EA_BITS['hires']:
                 hires_sites[r] += n
             if m & EA_BITS['io'] or (val is not None and mode in ('abs', 'absx', 'absy') and 0xC000 <= val <= 0xC0FF):
-                io_sites.append((a, im.id, mn, mode, val, n, softsw(val, mode) if val is not None else None))
+                io_sites.append((a, im.id, mn, mode, val, n, softsw(val, mode, mn) if val is not None else None))
     smc = []
     for im in images:
         for k, v in im.smc.items():
@@ -185,7 +189,7 @@ def report(cov, s, out=sys.stdout):
         p(f"pages with several code images (overlays / loaded code): {' '.join(summ['overlay_pages'])}")
     p(f"loaders (bulk writers that load code): {' '.join(cov.get('loaders', []))}")
 
-    p('\n## 1. Hardware surface: every I/O access site  -> each one needs a native routine (DECIDE.md rule H)')
+    p('\n## 1. Hardware surface: every I/O access site  -> its action in the hardware map (kit/hw/apple2.py; DECIDE.md rule H)')
     bycat = collections.defaultdict(list)
     for a, imid, mn, mode, val, n, sw in s['io']:
         bycat[sw[1] if sw else 'unknown'].append((a, imid, mn, mode, val, n, sw))
@@ -216,7 +220,7 @@ def report(cov, s, out=sys.stdout):
 
     p('\n## 5. ROM / firmware calls  -> natives (rule R)')
     for a, n in sorted(s['rom'].items()):
-        k = ROM_KNOWN.get(a)
+        k = rom_entry(a)
         p(f"  ${a:04X} x{n:<8} {k[0] + ' (' + k[1] + ') -> ' + k[2] if k else 'unknown: look it up (a2-help skill)'}")
 
     p('\n## 6. Timing code to check by hand (rule T)')
@@ -228,7 +232,7 @@ def report(cov, s, out=sys.stdout):
         p(f"  {_r(r)} {cat:<8} sites {' '.join(f'${x:04X}' for x in sorted(sites))}: cycle-timed loop; "
           f"replace the whole loop natively, keep its exits")
     if 0xFCA8 in s['rom']:
-        p('  $FCA8 WAIT is used: real-time delays; nt_wait scales them to CoCo cycles')
+        p('  $FCA8 WAIT is used: real-time delays; the rom_wait idiom scales them to CoCo cycles')
 
 
 def _r(r):
@@ -277,7 +281,7 @@ def draft_spec(cov, s):
     seen = set()
     for a, imid, mn, mode, val, n, sw in sorted(s['io']):
         r = owner(sorted(s['routines']), a)
-        if r is not None and r not in seen and sw:
+        if r is not None and r not in seen and sw and sw[2].startswith(('TRAP', 'idiom')):
             seen.add(r)
             L.append(f"    0x{r:04X}: 'n_{sw[1]}_{r:04x}',   # {sw[0]} at ${a:04X}; suggested: {sw[2]}")
     tot_h = sum(s['hires'].values()) or 1
@@ -286,8 +290,9 @@ def draft_spec(cov, s):
             seen.add(r)
             L.append(f"    0x{r:04X}: 'nh_{r:04x}',   # {100 * n / tot_h:.0f}% of hi-res traffic")
     for a in sorted(s['rom']):
-        k = ROM_KNOWN.get(a)
-        L.append(f"    0x{a:04X}: '{(k[2] if k else 'n_rom_%04x' % a).split()[0]}',   # ROM {k[0] if k else '?'}")
+        k = rom_entry(a)
+        sym = ('n_' + k[0].lower().replace(' ', '_')) if k else 'n_rom_%04x' % a
+        L.append(f"    0x{a:04X}: '{sym}',   # ROM {k[0] + ': ' + k[2] if k else '?'}")
     L += ['}', '', '# (lo, hi) of every replaced routine body: fill in from the listing', 'NATIVE_RANGES = []', '',
           '# translated addresses a native continues into', 'NATIVE_EXITS = []', '',
           '# opcode SMC bytes handled by natives / operand reads', 'SMC_BYTES = [' +
