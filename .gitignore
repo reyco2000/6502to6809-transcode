@@ -1,0 +1,14 @@
+build/
+__pycache__/
+*.pyc
+*.dsk
+*.DSK
+*.woz
+*.nib
+*.d64
+*.rom
+*.ROM
+*.bin
+snap/
+sim/cc3sim
+.superpowers/

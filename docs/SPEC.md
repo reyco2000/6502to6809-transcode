@@ -1,0 +1,66 @@
+# Port spec reference (`<port>/spec.py`, `<port>/port.toml`)
+
+`python3 -m kit.newport NAME` writes a commented template of both files.
+
+## port.toml
+
+| key | meaning |
+|---|---|
+| `name` | Port name: Python package and disk file prefix. |
+| `disk`, `rom`, `prom` | The user's Apple disk image, the Apple ROM (last 16K = `$C000-$FFFF`), and the Disk II boot PROM. Never copied anywhere. |
+| `build` | Where everything derived goes: `snap/`, `coverage.json`, `t512/`, `t128/`, `.dsk`. Relative paths are relative to `port.toml`. |
+| `coverage` | The coverage profile (`./run.sh profile`). |
+| `ram` | Default target: 512 or 128. |
+| `loader` | Disk file names `<loader>.BIN`/`.DAT`; the user types `LOADM"<loader>":EXEC`. |
+
+## spec.py: images
+
+| name | meaning |
+|---|---|
+| `BASE` | The boot hand-over image (default `'cold'`). Engine = code identical in every image. |
+| `STAGES` | Overlay images in loader-number order. `nt_load` / `nt_ovl` get B = 1..`NSTAGES`. Two kinds: a **restart stage** (the loader never returns: snapshot with `record_writes(m)`; entered from its snapshot state by `nt_load`) and a **call stage** (the game's loader returns to its caller, like mid-game segment loads: snapshot with `record_writes(m, call=True)`; its image is BASE plus the bytes the loader wrote; `nt_ovl` copies them and returns; 512K only for now). |
+| `IMAGES` | Image name → snapshot file stem (`snap_<name>`). |
+| `entry_state`, `entries`, `load_images`, `profile_roots` | From `kit.specbase.helpers(module)`. |
+
+## spec.py: what is translated
+
+| name | meaning |
+|---|---|
+| `NATIVE` | `{6502 address: native symbol}`. A JSR/JMP to the address calls the native instead. |
+| `NATIVE_RANGES` | `[(lo, hi)]`, inclusive bodies of replaced code. Never translated; any other transfer into them is an error. |
+| `NATIVE_EXITS` | Translated addresses natives jump to (`jmp E<addr>`). |
+| `SMC_BYTES` | Opcode/operand bytes patched at run time inside native code (they may differ between images). |
+| `SMC_IMM` | Instruction addresses whose operand is patched (operand SMC): the translation reads it from memory. Immediate operands are loaded from the code byte; absolute, `abs,X` and `abs,Y` operands go through an `xsm*_HHHH` helper that forms the address at run time. The patched address must stay in RAM; if it can point at I/O (for example a `STA $C054`/`$C055` page flip), replace that code with a native. |
+| `CODE_RANGES` | Where translated code may be: not zero page, the stack, the hi-res pages or I/O. |
+| `SMC_OPS` | `{site: [opcodes]}` opcode SMC: each opcode the profile saw (survey section 4) is translated, and the code dispatches on the byte in memory at run time (unknown byte: `x_trap`). The image's own byte is added when compatible. Variants must have the same length and no JSR/JMP/RTS; their operand is always read from memory. |
+| `SMC_JMP` | `{JMP abs site: [targets]}`: a JMP whose target operand is patched (the targets the profile saw). |
+| `TRAPS` | Dead paths: `[addr | (image, addr)]`. A transfer to the address becomes `jsr x_trap`. `gen` lists candidates when discovery runs into data on paths the profile never took, and refuses a trap on executed code. |
+| `HIRES_ACCESS` | `True`: translated code may read/write the hi-res pages; those accesses (static addresses in `$2000-$5FFF`, and pointer/indexed ones the profile saw there or never ran) go through the runtime's `hr_rd`/`hr_wr` (512K: hi-res mapped for one byte; whole-page dirty mark). Correct but slow: hot drawing routines still want natives. |
+| `ROMDATA` | `[(lo, hi)]` ROM ranges the game reads as data (tables, pitch data): copied from the user's ROM into `ROM_<lo>` tables in the generated source; pointer reads that may reach ROM go through `xrd`. |
+
+## spec.py: generator hooks (optional)
+
+| name | meaning |
+|---|---|
+| `IO_MEM` | `{$C0xx: latch symbol}`: reads with no side effect become plain loads. The default covers the keyboard and buttons. |
+| `ROMCONST` | `{ROM address: byte}` for ROM data the game reads. |
+| `NATIVE_CONTRACTS` | `{symbol: Native(sym, use, defs, noreturn)}` for natives with no 6502 body (ROM entries) or that never return. |
+
+## spec.py: build hooks
+
+| name | meaning |
+|---|---|
+| `START_LABEL` | Native label `rt_start` jumps to after init (`game_start` in the scaffold). |
+| `NATIVE_SRC(ram)` | List of the port's `.asm` files for that target. |
+| `title(ram)` | Loading screen: `(row, text, attribute[, column])`, 40×24, attribute bits 5-3 = foreground (palette 8-15). |
+| `BLOCKB_RESERVE` | 128K only: bytes at the top of code block B for native tables (equate `BLOCKB_TOP`). |
+
+## Equates the build gives the native sources
+- `XMMU`: real MMU mapping. It is undefined in native tests.
+- `NSTAGES`.
+- The block layout: `BLK_*`.
+- `OVORG`/`OVBASE` (128K): where level code sits.
+- `BLOCKB_TOP` (128K).
+- `RT_START_GAME`.
+- Every runtime symbol (`rt_*`, `vm_*`, `kb_*`, `joy_*`, `hr_on`, …), since the natives are assembled together with the runtime.
+- For level code, the label `<IMAGE>_START` is built from the snapshot: stack frames, registers and flags.
