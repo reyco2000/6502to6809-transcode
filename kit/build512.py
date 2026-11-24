@@ -104,20 +104,10 @@ def symbols(path):
 
 
 def io_defaults(lines_sets, defined):
-    """I/O handlers the generated code references but the runtime does not define: reads give 0, writes do
-    nothing"""
-    import re
-    used = set()
-    for lines in lines_sets:
-        for ln in lines:
-            used |= set(re.findall(r'\bio_(?:rdx?|wrx?)_C0[0-9A-F]{2}\b', ln))
-    out = []
-    for s in sorted(used - defined):
-        if s.startswith('io_rd'):
-            out += [f'{s}\tpshs\tcc', '\tclr\tIOV', '\tpuls\tcc,pc']
-        else:
-            out += [f'{s}\trts']
-    return out
+    """I/O handlers the generated code references but the runtime does not define: stubs for the hardware map's
+    Ignore / Latch entries; anything else stops the build (kit/hw/iocheck.py)"""
+    from .hw import iocheck
+    return iocheck.stubs(iocheck.used_symbols(lines_sets), defined, getattr(spec, 'HW_OVERRIDES', {}))
 
 
 def start_lines(name, pfx, eng):

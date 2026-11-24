@@ -42,7 +42,8 @@
 
 | name | meaning |
 |---|---|
-| `IO_MEM` | `{$C0xx: latch symbol}`: reads with no side effect become plain loads. The default covers the keyboard and buttons. |
+| `IO_MEM` | `{$C0xx: latch symbol}`: reads with no side effect become plain loads. The default is the hardware map's latch entries (keyboard, buttons). |
+| `HW_OVERRIDES` | `{$C0xx: action}` (`from kit.hw import Ignore, Latch, Runtime`): replaces the hardware map's action for one address (`kit/hw/apple2.py`). Generation fails on any access whose action is a trap, loop-only or unmapped; an override is how a port accepts one, for example `{0xC05E: Ignore()}` when a game sets AN3 but never shows double hi-res. |
 | `ROMCONST` | `{ROM address: byte}` for ROM data the game reads. |
 | `NATIVE_CONTRACTS` | `{symbol: Native(sym, use, defs, noreturn)}` for natives with no 6502 body (ROM entries) or that never return. |
 

@@ -56,6 +56,39 @@ def g_survey(check):
     return ok
 
 
+@group('iocheck')
+def g_iocheck(check):
+    from kit.hw import iocheck, Ignore
+    ok = True
+    e, c = iocheck.check({'io_wr_C05E'})
+    ok &= check('iocheck: trap is an error', len(e) == 1 and 'double hi-res' in e[0] and 'HW_OVERRIDES' in e[0])
+    e, c = iocheck.check({'io_wr_C05E'}, overrides={0xC05E: Ignore()})
+    ok &= check('iocheck: override clears it', e == [])
+    e, c = iocheck.check({'io_rd_C064'})
+    ok &= check('iocheck: idiom-only single access', len(e) == 1 and 'paddle_count' in e[0])
+    e, c = iocheck.check({'io_wr_C050', 'io_rd_C030'})
+    ok &= check('iocheck: cond collected', e == [] and c == {'HW_IOV'})
+    e, c = iocheck.check({'io_rdx_C030'})
+    ok &= check('iocheck: unmapped is an error', len(e) == 1 and 'not in the hardware map' in e[0])
+    ok &= check('iocheck: ignore stub',
+                iocheck.stubs({'io_rd_C020'}, set()) == ['io_rd_C020\tpshs\tcc', '\tclr\tIOV', '\tpuls\tcc,pc'])
+    ok &= check('iocheck: ignore write stub', iocheck.stubs({'io_wr_C058'}, set()) == ['io_wr_C058\trts'])
+    ok &= check('iocheck: defined symbols get no stub', iocheck.stubs({'io_rd_C030'}, {'io_rd_C030'}) == [])
+    try:
+        iocheck.stubs({'io_wr_C05F'}, set())
+        raised = False
+    except SystemExit as x:
+        raised = 'double hi-res' in str(x)
+    ok &= check('iocheck: stubs refuse a trap', raised)
+    e, c = iocheck.check({'io_rd_C000'}, io_mem={0xC000: 'my_latch'})
+    ok &= check('iocheck: spec IO_MEM wins', e == [])
+    from kit import gen
+    ok &= check('iocheck: gen default IO_MEM from the map',
+                gen.IO_MEM_DEFAULT[0xC000] == 'kb_kbd' and gen.IO_MEM_DEFAULT[0xC061] == 'btn0'
+                and gen.IO_MEM_DEFAULT[0xC062] == 'btn1')
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():

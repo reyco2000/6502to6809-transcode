@@ -15,22 +15,30 @@ import os
 import sys
 
 from .program import split
+from . import hw
+from .hw import apple2 as hw_apple2, iocheck
 from .xc65 import Ctx, Native, translate, xiy_helpers, XError, routine_contract, REGS, FLAGS, ALL, A_, X_, Y_  # noqa: F401
 
 IO = {}
 for _a in range(0xC000, 0xC100):
     IO[_a] = (f'io_rd_{_a:04X}', f'io_wr_{_a:04X}')
 # defaults; a port overrides them in its spec
-IO_MEM_DEFAULT = {0xC000: 'kb_kbd', 0xC061: 'btn0', 0xC062: 'btn1'}   # plain loads of the runtime's latches
+# plain loads of the runtime's latches: the hardware map's Latch read entries (kit/hw/apple2.py)
+IO_MEM_DEFAULT = {a: e.action.sym for e in hw_apple2.MAP if isinstance(e.action, hw.Latch) and 'rd' in e.modes
+                  for a in range(e.lo, e.hi + 1)}
 spec = None
-IO_MEM, ROMCONST, NATIVE_CONTRACTS = IO_MEM_DEFAULT, {}, {}
+IO_MEM, ROMCONST, NATIVE_CONTRACTS, HW_OVERRIDES = IO_MEM_DEFAULT, {}, {}, {}
 
 
 def use(port_spec):
     """select the port whose spec module drives the generator"""
-    global spec, IO_MEM, ROMCONST, NATIVE_CONTRACTS
+    global spec, IO_MEM, ROMCONST, NATIVE_CONTRACTS, HW_OVERRIDES
     spec = port_spec
-    IO_MEM = getattr(spec, 'IO_MEM', IO_MEM_DEFAULT)
+    HW_OVERRIDES = dict(getattr(spec, 'HW_OVERRIDES', {}))
+    IO_MEM = dict(getattr(spec, 'IO_MEM', IO_MEM_DEFAULT))
+    for a, act in HW_OVERRIDES.items():                # an override to a latch is a plain load too
+        if isinstance(act, hw.Latch):
+            IO_MEM.setdefault(a, act.sym)
     ROMCONST = dict(getattr(spec, 'ROMCONST', {}))
     if getattr(spec, 'ROMDATA', ()):                 # the 6502 reference (difftest) reads the same ROM bytes
         rom = open(spec.PORT.rom, 'rb').read()
@@ -210,7 +218,19 @@ def build(outdir, comments=True):
                    f'must produce {fmt(n.outputs)}')
     open(os.path.join(outdir, 'report.txt'), 'w').write('\n'.join(rep) + '\n')
     print('\n'.join(rep))
+    io_check(outdir)
     return P
+
+
+def io_check(outdir):
+    """no silent I/O defaults: every handler the generated code uses must have an action in the hardware map
+    (or spec HW_OVERRIDES).  Runs after the sources are written, so they can be inspected."""
+    srcs = [open(os.path.join(outdir, f)).read().splitlines() for f in sorted(os.listdir(outdir))
+            if f.endswith('.asm')]
+    errors, conds = iocheck.check(iocheck.used_symbols(srcs), HW_OVERRIDES, IO_MEM)
+    if errors:
+        raise SystemExit('hardware accesses with no CoCo action (kit/hw/apple2.py):\n  ' + '\n  '.join(errors))
+    return conds
 
 
 def main(port_spec, argv=None):
