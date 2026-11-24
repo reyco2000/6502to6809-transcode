@@ -183,6 +183,10 @@ def build(out_dsk, verbose=True, plain=False):
         nat_src += src(f)
     xiy = src(os.path.join(sdir, 'xiy.asm'))
     import re
+    from .hw import iocheck
+    for f in iocheck.runtime_extras(iocheck.used_symbols([eng_src] + list(ovl_src.values())),
+                                    getattr(spec, 'HW_OVERRIDES', {})):
+        rt_src = rt_src + src(os.path.join(RT_ROOT, f))     # handlers only some ports use (kit/hw/apple2.py)
     defined = set(re.findall(r'^(io_\w+)', '\n'.join(rt_src), re.M))
     iod = io_defaults([eng_src] + list(ovl_src.values()), defined)
     stg_runs = {n: stage_runs(n) for n in range(1, len(STAGES) + 1)}

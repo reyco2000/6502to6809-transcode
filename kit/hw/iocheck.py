@@ -79,3 +79,9 @@ def stubs(used, defined, overrides=None):
     if errors:
         raise SystemExit('I/O handlers:\n  ' + '\n  '.join(errors))
     return out
+
+
+def runtime_extras(used, overrides=None):
+    """sources (relative to rt/) of the Runtime(cond) handlers the generated code needs"""
+    _, conds = check(used, overrides)
+    return [apple2.COND_SRC[c] for c in sorted(conds)]

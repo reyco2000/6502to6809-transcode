@@ -14,6 +14,9 @@ R, W, RX, WX = 'rd', 'wr', 'rdx', 'wrx'
 RW = frozenset({R, W})
 F = frozenset
 
+# Runtime(cond) handlers live in these sources (relative to rt/); the build appends one only when needed
+COND_SRC = {'HW_IOV': 'hw/apple2/io_video.asm'}
+
 SLOT = Trap('slot I/O (Disk II): loaders are dropped, use snapshots + nt_load')
 
 MAP = [
@@ -92,3 +95,36 @@ def lookup(addr, mode, overrides=None):
 def rom(addr):
     """the firmware entry point at addr, or None"""
     return ROM.get(addr)
+
+
+def _act(a):
+    if isinstance(a, Runtime):
+        return 'runtime' + (f' (`{a.cond}`)' if a.cond else '')
+    if isinstance(a, Latch):
+        return f'latch `{a.sym}`'
+    if isinstance(a, Ignore):
+        return f'ignored (reads {a.value})'
+    if isinstance(a, Trap):
+        return f'**trap**: {a.reason}'
+    if isinstance(a, IdiomOnly):
+        return 'loop only: ' + ', '.join(f'`{k}`' for k in a.kinds)
+    return str(a)
+
+
+def render_doc():
+    """the hardware map as markdown (docs/NATIVES.md and docs/machines/apple2.md hold a copy; selftest checks)"""
+    rng = lambda e: f'`${e.lo:04X}`' if e.lo == e.hi else f'`${e.lo:04X}-${e.hi:04X}`'
+    L = ['| address | name | access | CoCo action | notes |', '|---|---|---|---|---|']
+    for e in sorted(MAP, key=lambda e: (e.lo, e.hi)):
+        L.append(f'| {rng(e)} | {e.name} | {", ".join(sorted(e.modes))} | {_act(e.action)} | {e.doc} |')
+    L += ['', '| ROM entry | name | CoCo action |', '|---|---|---|']
+    for a in sorted(ROM):
+        L.append(f'| `${a:04X}` | {ROM[a].name} | {_act(ROM[a].action)} |')
+    return '\n'.join(L) + '\n'
+
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] != ['--doc']:
+        raise SystemExit('usage: python3 -m kit.hw.apple2 --doc')
+    sys.stdout.write(render_doc())
