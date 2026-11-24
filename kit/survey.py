@@ -175,8 +175,41 @@ def survey(cov, images, top=25):
     rom = collections.Counter()
     for e in cov.get('rom_entries', []):
         rom[_h(e[3])] += e[4]
+    matches, near = idioms(images)
     return dict(total=total, rcyc=rcyc, rcls=rcls, io=io_sites, hires=hires_sites, smc=sorted(smc), rom=rom,
-                pages=sorted(pages), routines=rts, top=top)
+                pages=sorted(pages), routines=rts, top=top, matches=matches, near=near)
+
+
+def idioms(images):
+    """hardware idiom proposals and near-misses (kit/hw/match.py) over every image's executed code
+    -> ([(Match, [image ids])], [(NearMiss, [image ids])])"""
+    from .discover import discover
+    from .hw.match import find
+    props, nears = {}, {}
+    for im in images:
+        mem = bytearray(0x10000)
+        mem[im.base:im.base + len(im.bytes)] = im.bytes
+        roots = sorted(a for a in im.instr if a < 0xC000)
+        if not roots:
+            continue
+        c = discover(mem, roots, {}, code_ranges=((im.base, min(0xBFFF, im.base + len(im.bytes) - 1)),))
+        ms, ns = find(mem, c, set(im.instr))
+        for m in ms:
+            props.setdefault(repr(m.idiom), (m, []))[1].append(im.id)
+        for n in ns:
+            nears.setdefault((n.kind, n.lo, n.hi, n.reason), (n, []))[1].append(im.id)
+    return sorted(props.values(), key=lambda v: v[0].idiom.entry), sorted(nears.values(), key=lambda v: v[0].lo)
+
+
+def idiom_line(m, ids, comment=True):
+    """one draft-spec line for a proposal"""
+    i = m.idiom
+    ex = ', '.join(f'0x{e:04X}' for e in i.exits)
+    s = (f"Idiom({i.kind!r}, entry=0x{i.entry:04X}, end=0x{i.end:04X}, exits=({ex}{',' if len(i.exits) == 1 else ''}), "
+         f"params={i.params!r}),")
+    note = '; '.join(m.evidence) + f'; images {" ".join(map(str, ids))}; check: python3 -m kit.listing PORT ' \
+        f'{i.entry:04X}-{i.end:04X}'
+    return f'#   {s}   # {note}' if comment else s
 
 
 def report(cov, s, out=sys.stdout):
@@ -234,6 +267,16 @@ def report(cov, s, out=sys.stdout):
     if 0xFCA8 in s['rom']:
         p('  $FCA8 WAIT is used: real-time delays; the rom_wait idiom scales them to CoCo cycles')
 
+    p('\n## 7. Hardware idioms: proposed / near-miss  -> spec HW_IDIOMS after checking each one (kit/hw/lib.py)')
+    for m, ids in s.get('matches', []):
+        i = m.idiom
+        p(f"  proposed  {i.kind:<13} ${i.entry:04X}-${i.end:04X}  img {' '.join(map(str, ids))}  "
+          f"{'; '.join(m.evidence)}")
+    for n, ids in s.get('near', []):
+        p(f"  near-miss {n.kind:<13} ${n.lo:04X}-${n.hi:04X}  img {' '.join(map(str, ids))}  {n.reason}")
+    if not s.get('matches') and not s.get('near'):
+        p('  (none)')
+
 
 def _r(r):
     return f'${r:04X}' if r is not None else '  ?  '
@@ -281,9 +324,17 @@ def draft_spec(cov, s):
     seen = set()
     for a, imid, mn, mode, val, n, sw in sorted(s['io']):
         r = owner(sorted(s['routines']), a)
+        if any(m.idiom.entry <= a <= m.idiom.end for m, _ in s.get('matches', [])):
+            continue                                 # proposed as a hardware idiom below
         if r is not None and r not in seen and sw and sw[2].startswith(('TRAP', 'idiom')):
             seen.add(r)
             L.append(f"    0x{r:04X}: 'n_{sw[1]}_{r:04x}',   # {sw[0]} at ${a:04X}; suggested: {sw[2]}")
+    for n, ids in s.get('near', []):                  # loops that look like an idiom but need a hand native
+        r = owner(sorted(s['routines']), n.lo)
+        r = n.lo if r is None else r
+        if r not in seen:
+            seen.add(r)
+            L.append(f"    0x{r:04X}: 'n_{n.kind}_{r:04x}',   # near-miss ${n.lo:04X}-${n.hi:04X}: {n.reason}")
     tot_h = sum(s['hires'].values()) or 1
     for r, n in s['hires'].most_common(12):
         if r is not None and r not in seen and n / tot_h > 0.02:
@@ -293,7 +344,10 @@ def draft_spec(cov, s):
         k = rom_entry(a)
         sym = ('n_' + k[0].lower().replace(' ', '_')) if k else 'n_rom_%04x' % a
         L.append(f"    0x{a:04X}: '{sym}',   # ROM {k[0] + ': ' + k[2] if k else '?'}")
-    L += ['}', '', '# (lo, hi) of every replaced routine body: fill in from the listing', 'NATIVE_RANGES = []', '',
+    L += ['}', '', '# hardware idioms the survey proposes (section 7): check each against the listing, then uncomment',
+          '# (an exit into overlay code needs image=\'<name>\').  from kit.hw import Idiom', 'HW_IDIOMS = [']
+    L += [idiom_line(m, ids) for m, ids in s.get('matches', [])]
+    L += [']', '', '# (lo, hi) of every replaced routine body: fill in from the listing', 'NATIVE_RANGES = []', '',
           '# translated addresses a native continues into', 'NATIVE_EXITS = []', '',
           '# opcode SMC bytes handled by natives / operand reads', 'SMC_BYTES = [' +
           ', '.join(f'0x{a:04X}' for a, imid, k, nt, wr in s['smc'] if k == 'opcode') + ']',

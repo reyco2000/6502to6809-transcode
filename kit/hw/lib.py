@@ -85,6 +85,9 @@ def exit_regs(p):
     f = p.get('exit_flags', {'n': 0, 'z': 1})
     out += ['\tandcc\t#$F3']
     bits = (0x08 if f.get('n') else 0) | (0x04 if f.get('z') else 0)
+    if 'c' in f:                                    # a CPX/CPY in the 6502 code decided C
+        out[-1] = '\tandcc\t#$F2'
+        bits |= 0x01 if f['c'] else 0
     if bits:
         out += [f'\torcc\t#${bits:02X}']
     return out

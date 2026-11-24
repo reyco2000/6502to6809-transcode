@@ -186,6 +186,119 @@ def m_delay(mem, code, loop):
                  [f'counted delay ${entry:04X}-${end:04X}, up to {total:,} Apple cycles'])
 
 
+# ------------------------------------------------------------------------------------------------ tone
+def _preceding_load(code, head, reg):
+    """the LDX/LDY of `reg` right before head (not a branch target itself), or None"""
+    for a, i in code.insns.items():
+        if a + i.len == head and i.mn in LOADS and LOADS[i.mn] == reg and _source(i) is not None:
+            return i
+    return None
+
+
+def m_tone(mem, code, loop):
+    head, tail, ex = loop
+    ins = body(code, head, tail)
+    *rest, br = ins
+    clicks = [i for i in rest if io_addr(i) == 0xC030 and i.mode == 'abs']
+    if not clicks:
+        return None
+    if any(io_addr(i) is not None and 0xC000 <= io_addr(i) <= 0xC01F for i in rest):
+        return NearMiss('tone', head, tail, 'polls the keyboard inside the note: hand native (see speaker.asm)')
+    inner = [(n, i) for n, i in enumerate(rest) if i.mode == 'rel' and target(i) is not None and target(i) < i.addr
+             and target(i) >= head]
+    if len(clicks) > 1 or len(inner) > 1:
+        return NearMiss('tone', head, tail, 'two counters / speaker accesses: multi-voice or duty-cycle player, '
+                        'hand native')
+    if br.mn != 'BNE' or len(inner) != 1:
+        return NearMiss('tone', head, tail, 'speaker loop without one inner counted delay: hand native')
+    k, ib = inner[0]
+    h = next(n for n, i in enumerate(rest) if i.addr == target(ib))
+    il = _count_loop(rest[h:k + 1])
+    pre, post = rest[:h], rest[k + 1:]
+    if il is None or not pre or pre[-1].mn not in LOADS or LOADS[pre[-1].mn] != il[0] or _source(pre[-1]) is None:
+        return NearMiss('tone', head, tail, 'inner delay is not a reloaded DEX/DEY count: hand native')
+    others = pre[:-1] + post
+    decs = [i for i in others if i.mn in DECS]
+    if len(decs) != 1 or DECS[decs[0].mn] == il[0] or \
+            any(i.mn not in DECS and i.mn != 'NOP' and i is not clicks[0] for i in others):
+        return NearMiss('tone', head, tail, 'speaker loop does more than click and count: hand native')
+    reg = DECS[decs[0].mn]
+    outer_pass = sum(cyc(i) for i in pre + post) + 3 - 1
+    entry, duration = head, (reg,)
+    ld = _preceding_load(code, head, reg)
+    if ld is not None:
+        entry, duration = ld.addr, _source(ld)
+    regs = {reg: 0, il[0]: 0}
+    if clicks[0].mn == 'LDA':
+        regs['a'] = 0                              # the speaker read: floating bus (0 in the tests)
+    end = tail + br.len - 1
+    params = dict(period=_source(pre[-1]), duration=duration, inner_pass=il[1], outer_pass=outer_pass, const=-1,
+                  exit_regs=regs)
+    return Match(Idiom('tone', entry, end, (ex,), params),
+                 [f'single-voice tone ${entry:04X}-${end:04X}: {outer_pass} + {il[1]} x period Apple cycles per click'])
+
+
+# ------------------------------------------------------------------------------------------------ paddle_count
+def m_paddle_count(mem, code, loop):
+    head, tail, ex = loop
+    ins = body(code, head, tail)
+    rd = ins[0]
+    a = io_addr(rd)
+    if a is None or not 0xC064 <= a <= 0xC067 or rd.mn != 'LDA' or len(ins) < 4:
+        return None
+    bpl, inc = ins[1], ins[2]
+    if bpl.mn != 'BPL' or inc.mn not in ('INX', 'INY') or ins[-1].mn != 'BNE':
+        return NearMiss('paddle_count', head, tail, 'paddle loop of an unusual shape: hand native (paddle.asm)')
+    creg = 'x' if inc.mn == 'INX' else 'y'
+    cmp_ = ins[3] if len(ins) == 5 else None
+    if len(ins) > 5 or (cmp_ is not None and not (cmp_.mn == ('CPX' if creg == 'x' else 'CPY') and cmp_.mode == 'imm')):
+        return NearMiss('paddle_count', head, tail, 'paddle loop does more than count: hand native (paddle.asm)')
+    done = target(bpl)
+    # before the loop: [LDX #n] trigger [NOP...] LDr #0
+    pre, a2 = [], head
+    for _ in range(4):
+        p = next((i for b, i in code.insns.items() if b + i.len == a2), None)
+        if p is None:
+            break
+        pre.insert(0, p)
+        a2 = p.addr
+    init = pre[-1] if pre and pre[-1].mn == ('LDX' if creg == 'x' else 'LDY') and pre[-1].mode == 'imm' \
+        and pre[-1].arg == 0 else None
+    trig = next((i for i in reversed(pre[:-1]) if io_addr(i) == 0xC070), None) if init else None
+    if init is None or trig is None:
+        return NearMiss('paddle_count', head, tail, 'no $C070 trigger and counter reset right before the loop')
+    entry = trig.addr
+    paddle = a - 0xC064
+    if rd.mode == 'absx':
+        ldx = next((i for i in pre if i.addr < trig.addr and i.mn == 'LDX' and i.mode == 'imm'), None)
+        if ldx is None or creg == 'x':
+            return NearMiss('paddle_count', head, tail, 'paddle number not constant (indexed by X on entry)')
+        paddle, entry = (paddle + ldx.arg) & 3 if paddle + ldx.arg <= 3 else None, ldx.addr
+        if paddle is None:
+            return NearMiss('paddle_count', head, tail, 'paddle number not constant')
+    elif rd.mode != 'abs':
+        return None
+    after = code.insns.get(ex)
+    flags = {'n': 0, 'z': 1}
+    if cmp_ is not None:
+        mx, fmax = cmp_.arg or 256, {'n': 0, 'z': 1, 'c': 1}
+        flags = dict(flags, c=0)
+        last = ex
+    elif after is not None and after.mn == ('DEX' if creg == 'x' else 'DEY') and ex + after.len == done:
+        mx, fmax, last = 255, {'n': 1, 'z': 0}, done
+    else:
+        return NearMiss('paddle_count', head, tail, 'count wraps to 0 after 255: hand native')
+    if last != done:
+        return NearMiss('paddle_count', head, tail, 'the loop has two different exits: hand native')
+    if mx > 255:
+        return NearMiss('paddle_count', head, tail, 'count limit 256: hand native')
+    pass_cycles = cyc(rd) + 2 + 2 + (cyc(cmp_) if cmp_ else 0) + 3
+    params = dict(paddle=paddle, counter=creg, pass_cycles=pass_cycles, max=mx, exit_regs={'a': 0},
+                  exit_flags=flags, exit_flags_max=fmax)
+    return Match(Idiom('paddle_count', entry, done - 1, (done,), params),
+                 [f'paddle {paddle} count loop ${entry:04X}-${done - 1:04X}, {pass_cycles} Apple cycles per count'])
+
+
 # ------------------------------------------------------------------------------------------------ ROM calls
 def m_rom(mem, code):
     out, seen = [], set()
@@ -199,7 +312,7 @@ def m_rom(mem, code):
     return out
 
 
-LOOP_MATCHERS = [m_vbl_poll, m_delay]
+LOOP_MATCHERS = [m_vbl_poll, m_paddle_count, m_tone, m_delay]
 
 
 def find(mem, code, executed=None):
@@ -220,6 +333,7 @@ def find(mem, code, executed=None):
                 break
             if isinstance(r, NearMiss):
                 near.append(r)
+                taken.append((r.lo, r.hi))          # no sub-proposals inside a hand-native loop
                 break
     matches += m_rom(mem, code)
     matches.sort(key=lambda m: m.idiom.entry)

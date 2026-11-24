@@ -415,6 +415,88 @@ def g_match(check):
     return ok
 
 
+# L: LDA $C030 / LDY $06 / M: DEY / BNE M / LDA $C030 / LDY $07 / N: DEY / BNE N / DEX / BNE L / RTS
+TWO_VOICE = bytes([0xAD, 0x30, 0xC0, 0xA4, 0x06, 0x88, 0xD0, 0xFD, 0xAD, 0x30, 0xC0, 0xA4, 0x07, 0x88, 0xD0, 0xFD,
+                   0xCA, 0xD0, 0xED, 0x60])
+# L: LDA $C030 / LDY $06 / M: DEY / BNE M / LDA $C000 / DEX / BNE L / RTS   (keyboard read inside the note)
+TONE_KEY = bytes([0xAD, 0x30, 0xC0, 0xA4, 0x06, 0x88, 0xD0, 0xFD, 0xAD, 0x00, 0xC0, 0xCA, 0xD0, 0xF2, 0x60])
+# as PADDLE_CODE, with LDA $C064,X (paddle number from X on entry)
+PADDLE_X_CODE = bytes([0xAD, 0x70, 0xC0, 0xA0, 0x00, 0xBD, 0x64, 0xC0, 0x10, 0x04, 0xC8, 0xD0, 0xF8, 0x88, 0x60])
+# LDX #1 / LDA $C070 / LDY #0 / L: LDA $C064,X / BPL D / INY / CPY #$C0 / BNE L / D: RTS
+PADDLE_CPY = bytes([0xA2, 0x01, 0xAD, 0x70, 0xC0, 0xA0, 0x00, 0xBD, 0x64, 0xC0, 0x10, 0x05, 0xC8, 0xC0, 0xC0, 0xD0,
+                    0xF6, 0x60])
+
+
+@group('match_io')
+def g_match_io(check):
+    ok = True
+    for op in (0xAD, 0x2C, 0x8D):                 # LDA / BIT / STA $C030
+        r = find_in(tone_code(op))
+        ok &= check(f'match: tone via {op:02X}', kinds(r) == ['tone'])
+    r = find_in(tone_code())
+    p = r[0][0].idiom.params if r[0] else {}
+    ok &= check('match: tone params', (p.get('period'), p.get('duration'), p.get('inner_pass'), p.get('outer_pass'))
+                == (('zp', 6), ('x',), 5, 11) and p.get('exit_regs') == {'a': 0, 'x': 0, 'y': 0})
+    r8 = find_in(tone_code(0x8D))
+    ok &= check('match: tone via STA keeps A', r8[0] and 'a' not in r8[0][0].idiom.params['exit_regs'])
+    from kit.hw.verify import difftest_instance
+    ev = difftest_instance(r[0][0].idiom, tone_code(), n=20, timed=False) if r[0] else None
+    ok &= check(f'match: proposed tone passes its difftest ({ev})', ev is not None and ev.passed == ev.cases > 0)
+    ok &= check('match: two-voice near-miss', kinds(find_in(TWO_VOICE)) == [] and near(find_in(TWO_VOICE), 'multi-voice'))
+    ok &= check('match: keyboard in the note is a near-miss', kinds(find_in(TONE_KEY)) == []
+                and near(find_in(TONE_KEY), 'keyboard'))
+    r = find_in(PADDLE_CODE)
+    p = r[0][0].idiom.params if r[0] else {}
+    ok &= check('match: paddle loop', kinds(r) == ['paddle_count'] and p.get('paddle') == 0 and p.get('counter') == 'y'
+                and p.get('pass_cycles') == 11 and p.get('max') == 255 and r[0][0].idiom.exits == (0x080E,)
+                and p.get('exit_flags_max') == {'n': 1, 'z': 0})
+    ev = difftest_instance(r[0][0].idiom, PADDLE_CODE, n=20, extra_lines=['joy_x\tfcb\t0', 'joy_y\tfcb\t0'],
+                           timed=False) if r[0] else None
+    ok &= check(f'match: proposed paddle passes its difftest at stick 0 ({ev})', ev is not None and ev.passed == ev.cases > 0)
+    ok &= check('match: paddle,X unknown is a near-miss', kinds(find_in(PADDLE_X_CODE)) == []
+                and near(find_in(PADDLE_X_CODE), 'not constant'))
+    r = find_in(PADDLE_CPY)
+    p = r[0][0].idiom.params if r[0] else {}
+    ok &= check('match: paddle,X after LDX #1 with CPY max', kinds(r) == ['paddle_count'] and p.get('paddle') == 1
+                and p.get('max') == 0xC0 and p.get('pass_cycles') == 13 and r[0][0].idiom.entry == 0x0800)
+    return ok
+
+
+def synth_cov(code, org=0x0800, entries=True):
+    """a minimal coverage profile around one image of code (every instruction executed once)"""
+    from kit.discover import discover
+    mem = bytearray(0x10000)
+    mem[org:org + len(code)] = code
+    c = discover(mem, [org], {}, code_ranges=((org, org + 0xFF),))
+    d = {'id': 0, 'page': f'{org >> 8:02X}', 'bytes': code.hex().upper(),
+         'instr': {f'{a:04X}': 1 for a in c.insns}, 'ea': {}, 'smc': {},
+         'entries': [[f'{org:04X}', 'jsr', '0000', 0, 1]] if entries else []}
+    return {'images': [d], 'rom_entries': [], 'loaders': [], 'summary': {}}
+
+
+@group('survey_idioms')
+def g_survey_idioms(check):
+    import io
+    from kit import survey
+    ok = True
+    cov = synth_cov(tone_code())
+    s = survey.survey(cov, [survey.Image(d) for d in cov['images']])
+    d = survey.draft_spec(cov, s)
+    ok &= check('survey: draft lists idiom commented out', "#   Idiom('tone'" in d and 'HW_IDIOMS = [' in d)
+    ok &= check('survey: idiom routine not in draft NATIVE', 'n_sound_0800' not in d)
+    out = io.StringIO()
+    survey.report(cov, s, out)
+    ok &= check('survey: section 7 lists the proposal', '## 7. Hardware idioms' in out.getvalue()
+                and 'tone' in out.getvalue().split('## 7.')[1])
+    cov = synth_cov(TWO_VOICE)
+    s = survey.survey(cov, [survey.Image(d) for d in cov['images']])
+    out = io.StringIO()
+    survey.report(cov, s, out)
+    ok &= check('survey: near-miss reported', 'multi-voice' in out.getvalue().split('## 7.')[1])
+    ok &= check('survey: near-miss routine stays a native candidate', 'n_tone_0800' in survey.draft_spec(cov, s))
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():
