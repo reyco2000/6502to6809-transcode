@@ -333,7 +333,7 @@ def g_lib_io(check):
     def audible(rnd, ram, a, x, y, p):              # passes of at least ~45 Apple cycles (below ~12 kHz)
         ram[0x06] = rnd.choice([0] + list(range(8, 256)))
         return a, x, y, p
-    r = difftest_instance(ti, tone_code(), n=60, setup=audible)
+    r = difftest_instance(ti, tone_code(), n=60, setup=audible, timed=False)   # pitch: group verify
     ok &= check(f'tone: regs/flags/RAM ({r})', r.passed == r.cases > 0)
     # tone timing is checked on the click intervals (group verify), not the total time: the routine's setup
     # (~100 Apple cycles before the first click) is not taken off the first period
@@ -602,6 +602,59 @@ def g_guide(check):
     ok &= check('survey: section 8 printed', '## 8. Least likely to transcode' in out.getvalue())
     for f in ('SKILL.md', os.path.join('docs', 'DECIDE.md')):
         ok &= check(f'guide: {f} has the ranking', 'Least likely to transcode' in open(os.path.join(REPO, f)).read())
+    return ok
+
+
+@group('review')
+def g_review(check):
+    """findings of the final review, each pinned by a test"""
+    import types
+    from kit.hw import Idiom
+    from kit.hw.idiom import expand
+    from kit.hw.verify import verify, difftest_instance, WAIT_6502
+    from kit.hw.lib import render_all
+
+    def mem_with(code, org=0x0800):
+        m = bytearray(0x10000)
+        m[org:org + len(code)] = code
+        return m
+    ok = True
+    for op in (0x2C, 0x8D):                       # 1: BIT / STA $C030 tones keep A
+        r = find_in(tone_code(op))
+        ev = verify(r[0][0], mem_with(tone_code(op)), n=10) if r[0] else None
+        ok &= check(f'review: tone via {op:02X} keeps A ({ev})', ev is not None and ev.passed == ev.cases > 0)
+    small = lambda rnd, ram, a, x, y, p: (rnd.randrange(1, 16), x, y, p)      # 2: short WAITs keep their time
+    ev = difftest_instance(Idiom('rom_wait', 0x0800, 0x080B), WAIT_6502, n=40, setup=small, floor=0)
+    ok &= check(f'review: WAIT with A = 1..15 within tolerance ({ev})', ev.passed == ev.cases > 0
+                and ev.timed == ev.cases)                       # timing_ok: 2%, or 16 CoCo cycles
+    ev = verify(find_in(PADDLE_CPY)[0][0], mem_with(PADDLE_CPY), n=20)                # 3: LDX #n folded in
+    ok &= check(f'review: paddle after LDX #1 leaves X = 1 ({ev})', ev.passed == ev.cases > 0)
+    mid = bytes([0xAD, 0x70, 0xC0, 0x85, 0x20, 0xA0, 0x00, 0xAD, 0x64, 0xC0, 0x10, 0x04, 0xC8, 0xD0, 0xF8, 0x88, 0x60])
+    r = find_in(mid)                                                                # 4: STA between trigger and reset
+    ok &= check('review: work between trigger and counter reset is a near-miss', kinds(r) == [] and bool(r[1]))
+    r = find_in(tone_code(), org=0x08FA)                                            # 5: page-crossing branch
+    p = r[0][0].idiom.params if r[0] else {}
+    ok &= check(f'review: page-crossing inner branch costs 6 ({p.get("inner_pass")})', p.get('inner_pass') == 6)
+    ev = verify(r[0][0], mem_with(tone_code(), 0x08FA), n=20) if r[0] else None
+    ok &= check(f'review: page-crossing tone verifies ({ev})', ev is not None and ev.passed == ev.cases > 0)
+    from kit.hw import lib
+    bad = [ln.replace('\tldx\thw_tone_0800_k', '\tldx\thw_tone_0800_k\n\tleax\t3,x')
+           for ln in render_all([find_in(tone_code())[0][0].idiom])]
+    bad = [x for ln in bad for x in ln.split('\n')]
+    ev = verify(find_in(tone_code())[0][0], mem_with(tone_code()), n=10, render_lines=bad)
+    ok &= check(f'review: a timing error fails the case ({ev})', ev.passed < ev.cases)
+    S = types.SimpleNamespace(NATIVE={}, NATIVE_RANGES=[], NATIVE_EXITS=[],                # 6: overlay exits
+                              HW_IDIOMS=[Idiom('delay', 0x900, 0x905, (0x906,), image='st2')])
+    ok &= check('review: overlay exits are refused', raises(SystemExit, expand, S))
+    S = types.SimpleNamespace(NATIVE={}, NATIVE_RANGES=[], NATIVE_EXITS=[], HW_IDIOMS=[Idiom('rom_bell', 0xFF3A, 0xFF3A)])
+    expand(S)                                                                       # 7: BELL keeps Y, A = $87
+    from kit.xc65 import Y_
+    ok &= check('review: BELL ($FF3A) contract keeps Y', not S.NATIVE_CONTRACTS['hw_rom_bell_ff3a'].defs & Y_)
+    lines = ['RYW\tequ\t$FBF0', 'RY\tequ\t$FBF1', 'tstart\tlds\t#$FBE0', '\tlda\t#$33', '\tsta\tRY',
+             '\tjsr\thw_rom_bell_ff3a', '\tsta\t$FC10', '\tlda\tRY', '\tsta\t$FC11', 'thalt\tbra\tthalt'] + \
+        render_all([Idiom('rom_bell', 0xFF3A, 0xFF3A)])
+    out, _ = sim_run(lines)
+    ok &= check(f'review: BELL returns A = $87, Y kept ({out[0]:02X} {out[1]:02X})', out[0] == 0x87 and out[1] == 0x33)
     return ok
 
 

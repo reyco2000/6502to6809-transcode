@@ -1,5 +1,6 @@
 ; rom_bell: monitor BELL ($FF3A) / BELL1 ($FBDD): WAIT(64), then 192 speaker clicks with WAIT(12) between them
-; (about 950 Hz for 0.1 s) in Apple time.  Out: Y = 0, A = 0, N=0 Z=1; B (6502 X) and C kept.
+; (about 950 Hz for 0.1 s) in Apple time.  Out (BELL1): Y = 0, A = 0, N=0 Z=1 C=1; (BELL, through COUT): A = $87,
+; Y kept.  B (6502 X) kept.
 @SYM@	pshs	cc,b
 	ldd	#@PRE@			; WAIT(64) + the LDY
 	std	hw_dc+1
@@ -17,11 +18,5 @@
 	puls	b
 	decb
 	bne	@SYM@_lp
-	clr	RY
-	puls	cc,b
-	pshs	cc
-	clra
-	puls	cc
-	andcc	#$F3
-	orcc	#$04
+@TAIL@
 @EXIT@

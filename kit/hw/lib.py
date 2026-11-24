@@ -19,6 +19,7 @@ NEEDS_DLY = {'rom_wait', 'delay', 'tone', 'rom_bell'}
 # contracts of idioms that replace a ROM entry (no 6502 body in the RAM image): kind -> (use, defs) names
 ROM_CONTRACTS = {'rom_wait': ('A_', 'A_ | FLAGS'), 'rom_pread': ('X_', 'A_ | Y_ | FLAGS'),
                  'rom_bell': ('0', 'A_ | Y_ | FLAGS')}
+ROM_CONTRACTS_AT = {0xFF3A: ('0', 'A_ | FLAGS')}    # BELL = LDA #$87 / JMP COUT: Y kept, A = $87
 HW_OVH = 56                 # hw_dly fixed cost in 8-cycle units (calibrated by tests/hw_checks.py)
 
 
@@ -59,8 +60,11 @@ def prepare_vbl_poll(i):
 ROM_WAIT_OVA = 153          # rom_wait's own fixed cost in Apple cycles (calibrated by tests/hw_checks.py)
 
 
+ROM_WAIT_SHORT = 32         # below this A, rom_wait uses the monitor's loop structure (no fixed cost)
+
+
 def prepare_rom_wait(i):
-    return {'OVA': ROM_WAIT_OVA}
+    return {'OVA': ROM_WAIT_OVA, 'SHORT': ROM_WAIT_SHORT}
 
 
 DELAY_OVA = 96             # delay's own fixed cost in Apple cycles (calibrated by tests/hw_checks.py)
@@ -140,7 +144,8 @@ def prepare_paddle_count(i):
     regs = dict(p.get('exit_regs', {}))
     regs.pop(p.get('counter', 'y'), None)
     pm = dict(p, exit_regs=regs)
-    pmax = dict(p, exit_regs=regs, exit_flags=p.get('exit_flags_max', p.get('exit_flags', {'n': 0, 'z': 1})))
+    rmax = dict(regs, a=p['exit_a_max']) if 'exit_a_max' in p else regs
+    pmax = dict(p, exit_regs=rmax, exit_flags=p.get('exit_flags_max', p.get('exit_flags', {'n': 0, 'z': 1})))
     return {'JOY': 'joy_y' if p['paddle'] & 1 else 'joy_x', 'STORE': store, 'MAX': mx,
             'TAB': _tab(paddle_model(j, p['pass_cycles'], mx) for j in range(64)),
             'EXITREGS': exit_regs(pm), 'EXITREGS_MAX': exit_regs(pmax)}
@@ -156,7 +161,11 @@ def _wait(a):
 
 
 def prepare_rom_bell(i):
-    return {'PRE': 2 + _wait(64) + 2, 'PASS': 2 + _wait(12) + 4 + 2 + 3 - BELL_OVA}
+    if i.entry == 0xFF3A:                           # BELL: through COUT, which keeps Y and returns A = $87
+        tail = ['\tpuls\tcc,b', '\tlda\t#$87']
+    else:                                           # BELL1: Y = 0 from its DEY loop, A from $C030, C = 1 from WAIT
+        tail = ['\tclr\tRY', '\tpuls\tcc,b', '\tpshs\tcc', '\tclra', '\tpuls\tcc', '\tandcc\t#$F3', '\torcc\t#$05']
+    return {'PRE': 2 + _wait(64) + 2, 'PASS': 2 + _wait(12) + 4 + 2 + 3 - BELL_OVA, 'TAIL': tail}
 
 
 def render(i):

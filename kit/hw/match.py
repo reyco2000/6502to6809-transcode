@@ -47,9 +47,18 @@ def target(ins):
 
 
 def cyc(ins, taken=False):
-    """Apple cycles of an instruction (base; a taken branch +1; no page-cross extras)"""
+    """Apple cycles of an instruction (base; a taken branch +1, +1 more when it crosses a page; indexed
+    page-cross extras are not counted)"""
     from ..survey import cycles
-    return cycles(ins.op) + (1 if taken and ins.mode == 'rel' else 0)
+    if taken and ins.mode == 'rel':
+        t = target(ins)
+        return cycles(ins.op) + 1 + (1 if (t ^ (ins.addr + 2)) & 0xFF00 else 0)
+    return cycles(ins.op)
+
+
+def saved(br):
+    """cycles a backward branch saves on its last, not-taken pass"""
+    return cyc(br, True) - 2
 
 
 def body(code, head, tail):
@@ -125,7 +134,7 @@ def _count_loop(ins_list):
     decs = [i for i in rest if i.mn in DECS]
     if len(decs) != 1 or any(i.mn not in DECS and i.mn != 'NOP' for i in rest):
         return None
-    return DECS[decs[0].mn], sum(cyc(i) for i in rest) + 3
+    return DECS[decs[0].mn], sum(cyc(i) for i in rest) + cyc(br, True)
 
 
 def m_delay(mem, code, loop):
@@ -160,11 +169,11 @@ def m_delay(mem, code, loop):
             return None
         reg = DECS[decs[0].mn]
         inner, inner_pass = src, il[1]
-        outer_pass = cyc(rest[0]) + sum(cyc(i) for i in tail_part) + 3 - 1    # the inner loop's last BNE: 2
+        outer_pass = cyc(rest[0]) + sum(cyc(i) for i in tail_part) + cyc(br, True) - saved(rest[k])
     else:
         reg, outer_pass = one
         inner_pass = 0
-    entry, const = head, -1                       # the last BNE is not taken
+    entry, const = head, -saved(br)               # the last BNE is not taken
     outer = (reg,)
     prev = [a for a, i in code.insns.items() if a + i.len == head and i.mn in LOADS and LOADS[i.mn] == reg]
     if prev and _source(code.insns[prev[0]]) is not None and prev[0] not in code.targets.get(head, ()):
@@ -223,7 +232,7 @@ def m_tone(mem, code, loop):
             any(i.mn not in DECS and i.mn != 'NOP' and i is not clicks[0] for i in others):
         return NearMiss('tone', head, tail, 'speaker loop does more than click and count: hand native')
     reg = DECS[decs[0].mn]
-    outer_pass = sum(cyc(i) for i in pre + post) + 3 - 1
+    outer_pass = sum(cyc(i) for i in pre + post) + cyc(br, True) - saved(ib)
     entry, duration = head, (reg,)
     ld = _preceding_load(code, head, reg)
     if ld is not None:
@@ -232,7 +241,7 @@ def m_tone(mem, code, loop):
     if clicks[0].mn == 'LDA':
         regs['a'] = 0                              # the speaker read: floating bus (0 in the tests)
     end = tail + br.len - 1
-    params = dict(period=_source(pre[-1]), duration=duration, inner_pass=il[1], outer_pass=outer_pass, const=-1,
+    params = dict(period=_source(pre[-1]), duration=duration, inner_pass=il[1], outer_pass=outer_pass, const=-saved(br),
                   exit_regs=regs)
     return Match(Idiom('tone', entry, end, (ex,), params),
                  [f'single-voice tone ${entry:04X}-${end:04X}: {outer_pass} + {il[1]} x period Apple cycles per click'])
@@ -264,16 +273,22 @@ def m_paddle_count(mem, code, loop):
         a2 = p.addr
     init = pre[-1] if pre and pre[-1].mn == ('LDX' if creg == 'x' else 'LDY') and pre[-1].mode == 'imm' \
         and pre[-1].arg == 0 else None
-    trig = next((i for i in reversed(pre[:-1]) if io_addr(i) == 0xC070), None) if init else None
+    k = len(pre) - 2                               # [LDX #n] trigger NOP... reset: nothing else in between
+    while k >= 0 and pre[k].mn == 'NOP':
+        k -= 1
+    trig = pre[k] if init and k >= 0 and io_addr(pre[k]) == 0xC070 and pre[k].mn in ('LDA', 'BIT', 'STA') else None
     if init is None or trig is None:
-        return NearMiss('paddle_count', head, tail, 'no $C070 trigger and counter reset right before the loop')
+        return NearMiss('paddle_count', head, tail, 'no $C070 trigger and counter reset (only NOPs between) right '
+                        'before the loop')
     entry = trig.addr
     paddle = a - 0xC064
+    regs = {'a': 0}
     if rd.mode == 'absx':
-        ldx = next((i for i in pre if i.addr < trig.addr and i.mn == 'LDX' and i.mode == 'imm'), None)
+        ldx = pre[k - 1] if k >= 1 and pre[k - 1].mn == 'LDX' and pre[k - 1].mode == 'imm' else None
         if ldx is None or creg == 'x':
             return NearMiss('paddle_count', head, tail, 'paddle number not constant (indexed by X on entry)')
         paddle, entry = (paddle + ldx.arg) & 3 if paddle + ldx.arg <= 3 else None, ldx.addr
+        regs['x'] = ldx.arg                        # the LDX is part of the range: leave X as it sets it
         if paddle is None:
             return NearMiss('paddle_count', head, tail, 'paddle number not constant')
     elif rd.mode != 'abs':
@@ -282,19 +297,23 @@ def m_paddle_count(mem, code, loop):
     flags = {'n': 0, 'z': 1}
     if cmp_ is not None:
         mx, fmax = cmp_.arg or 256, {'n': 0, 'z': 1, 'c': 1}
+        amax = 0x80                                # the count ran out before the timer: the last read had bit 7
         flags = dict(flags, c=0)
         last = ex
     elif after is not None and after.mn == ('DEX' if creg == 'x' else 'DEY') and ex + after.len == done:
         mx, fmax, last = 255, {'n': 1, 'z': 0}, done
+        amax = None                                # 255 is also the timer's own maximum: keep the timer exit's A
     else:
         return NearMiss('paddle_count', head, tail, 'count wraps to 0 after 255: hand native')
     if last != done:
         return NearMiss('paddle_count', head, tail, 'the loop has two different exits: hand native')
     if mx > 255:
         return NearMiss('paddle_count', head, tail, 'count limit 256: hand native')
-    pass_cycles = cyc(rd) + 2 + 2 + (cyc(cmp_) if cmp_ else 0) + 3
-    params = dict(paddle=paddle, counter=creg, pass_cycles=pass_cycles, max=mx, exit_regs={'a': 0},
+    pass_cycles = cyc(rd) + 2 + 2 + (cyc(cmp_) if cmp_ else 0) + cyc(ins[-1], True)
+    params = dict(paddle=paddle, counter=creg, pass_cycles=pass_cycles, max=mx, exit_regs=regs,
                   exit_flags=flags, exit_flags_max=fmax)
+    if amax is not None:
+        params['exit_a_max'] = amax
     return Match(Idiom('paddle_count', entry, done - 1, (done,), params),
                  [f'paddle {paddle} count loop ${entry:04X}-${done - 1:04X}, {pass_cycles} Apple cycles per count'])
 

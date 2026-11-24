@@ -1,6 +1,22 @@
 ; rom_wait: monitor WAIT ($FCA8) in Apple time.  In: A (0 = 256).  Out: A = 0, N=0 Z=1 C=1; B (6502 X), RY kept.
-; Apple: (26 + 27A + 5A^2) / 2 cycles; hw_dly burns them x 1.75.
-@SYM@	pshs	b
+; Apple: (26 + 27A + 5A^2) / 2 cycles.  Short waits (A < @SHORT@) keep the monitor's loop structure: an inner pass
+; of 9 CoCo cycles for 5 Apple (8.75) and an outer one of 17 for 12 (21): the two errors cancel to within ~1%.
+; Longer waits (and A = 0 = 256) are computed and burnt by hw_dly.
+@SYM@	cmpa	#@SHORT@
+	bhs	@SYM@_c
+	tsta
+	beq	@SYM@_c
+@SYM@_s2	pshs	a			; PHA
+@SYM@_s3	nop				; SBC #1 / BNE
+	nop
+	deca
+	bne	@SYM@_s3
+	puls	a			; PLA / SBC #1 / BNE
+	deca
+	bne	@SYM@_s2
+	orcc	#1
+@EXIT@
+@SYM@_c	pshs	b
 	sta	@SYM@_k
 	tfr	a,b
 	mul				; D = A^2 (A = 0: 0, fixed below)

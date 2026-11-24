@@ -4,7 +4,7 @@ These are starting points for a port's `src/*.asm`.
 
 **First check the hardware idiom library** (`rt/hw/apple2/`, `kit/hw/lib.py`). The survey proposes the standard idioms with test evidence (section 7 of `survey.txt`), and an accepted one is a single `Idiom(...)` line in `spec.HW_IDIOMS`, with no hand-written code:
 - `vbl_poll` replaces `vbl.asm`;
-- `rom_wait` replaces `wait.asm`, and is more accurate (0.1% instead of 2.9%);
+- `rom_wait` replaces `wait.asm`, and is more accurate (within 1.3%, or 9 CoCo cycles on the shortest waits, instead of 2.9%);
 - `paddle_count` and `rom_pread` replace `paddle.asm` for plain count loops;
 - `tone` replaces `speaker.asm` for single-voice loops;
 - `delay` and `rom_bell` have no template here.

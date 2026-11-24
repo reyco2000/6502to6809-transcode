@@ -17,7 +17,7 @@ class Idiom:
     end: int
     exits: tuple = ()
     params: dict = field(default_factory=dict, hash=False, compare=True)
-    image: str | None = None        # the overlay image whose code the exits jump into (None = engine)
+    image: str | None = None        # reserved: exits into overlay code are refused for now (engine only)
 
 
 def symbol(i):
@@ -32,7 +32,7 @@ def expand(spec):
     """merge spec.HW_IDIOMS into NATIVE / NATIVE_RANGES / NATIVE_EXITS (idempotent); overlaps are errors"""
     if getattr(spec, '_hw_expanded', False):
         return
-    from .lib import KINDS, ROM_CONTRACTS
+    from .lib import KINDS, ROM_CONTRACTS, ROM_CONTRACTS_AT
     idioms = list(getattr(spec, 'HW_IDIOMS', ()))
     native = dict(spec.NATIVE)
     ranges = list(spec.NATIVE_RANGES)
@@ -58,9 +58,12 @@ def expand(spec):
         exits += [e for e in i.exits if e not in exits]
     contracts = dict(getattr(spec, 'NATIVE_CONTRACTS', {}))
     for i in idioms:
+        if i.image is not None:
+            errors.append(f'{symbol(i)}: exits into overlay code (image={i.image!r}) are not supported yet: the '
+                          f'routine is assembled with the runtime, where overlay labels do not exist')
         if i.entry >= 0xC000 and i.kind in ROM_CONTRACTS:       # ROM entry: no 6502 body to derive it from
             from .. import xc65
-            use, defs = (eval(s, vars(xc65)) for s in ROM_CONTRACTS[i.kind])
+            use, defs = (eval(s, vars(xc65)) for s in ROM_CONTRACTS_AT.get(i.entry, ROM_CONTRACTS[i.kind]))
             contracts.setdefault(symbol(i), xc65.Native(symbol(i), use=use, defs=defs))
         elif i.entry >= 0xC000:
             errors.append(f'{symbol(i)}: kind {i.kind} cannot replace a ROM entry')

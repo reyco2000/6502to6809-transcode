@@ -11,7 +11,7 @@ on a copy of the documented ROM routine.
 import random
 from dataclasses import dataclass, field
 
-from .apple2 import APPLE_TO_COCO, DELAY_MIN
+from .apple2 import APPLE_TO_COCO, DELAY_MIN, TIMING_TOL
 from .idiom import symbol
 from .lib import render_all, TONE_MIN_PASS
 
@@ -20,14 +20,18 @@ from .lib import render_all, TONE_MIN_PASS
 class Evidence:
     cases: int = 0
     passed: int = 0
-    max_timing_err: float = 0.0
+    max_timing_err: float = 0.0     # relative, over cases long enough for it to apply (> SLACK / TIMING_TOL)
+    max_abs_err: float = 0.0        # CoCo cycles, over the shorter cases (they pass within SLACK)
     timed: int = 0
     notes: list = field(default_factory=list)
 
     def __str__(self):
         s = f'verified {self.passed}/{self.cases}'
         if self.timed:
-            s += f', timing error {100 * self.max_timing_err:.1f}% max ({self.timed} timed)'
+            s += f', timing error {100 * self.max_timing_err:.1f}% max'
+            if self.max_abs_err:
+                s += f' ({self.max_abs_err:.0f} CoCo cycles max on short ones)'
+            s += f' ({self.timed} timed)'
         return s + (f'; {"; ".join(self.notes[:3])}' if self.notes else '')
 
 
@@ -42,11 +46,21 @@ def _base_cycles(H):
     return _BASE[id(H)]
 
 
+SLACK = 16                  # CoCo cycles: an absolute timing error this small passes (one loop granule x 2)
+
+
+def timing_ok(coco, apple):
+    """within TIMING_TOL, or within SLACK CoCo cycles of Apple x 1.75 (very short routines)"""
+    want = apple * APPLE_TO_COCO
+    return abs(coco - want) <= SLACK or abs(coco / want - 1) <= TIMING_TOL
+
+
 def difftest_instance(idiom, code, n=300, seed=1, live=0x3F, setup=None, extra_lines=(), timed=True,
-                      render_lines=None, io=None, check=None):
+                      render_lines=None, io=None, check=None, floor=DELAY_MIN):
     """place `code` (the 6502 routine) at idiom.entry, run it on the 6502 reference and the rendered instance
-    in cc3sim on n random cases; compare registers/flags (mask `live`) and RAM, and the time (Apple cycles x
-    1.75, cases of at least DELAY_MIN Apple cycles) when `timed`"""
+    in cc3sim on n random cases; compare registers/flags (mask `live`) and RAM, and, when `timed`, the time
+    (Apple cycles x 1.75): a case of at least `floor` Apple cycles outside TIMING_TOL fails; shorter cases are
+    counted in a note (the routine's fixed cost makes them run long)"""
     from ..difftest import Harness, reference, compare
     exits = {f'{(idiom.image.upper() + "_") if idiom.image else "E"}{e:04X}': e for e in idiom.exits}
     lines = list(render_lines) if render_lines is not None else render_all([idiom])
@@ -55,7 +69,7 @@ def difftest_instance(idiom, code, n=300, seed=1, live=0x3F, setup=None, extra_l
     rnd = random.Random(seed)
     ev = Evidence()
     inside = set(range(idiom.entry, idiom.end + 1))
-    skipped = 0
+    skipped = short = 0
     for _ in range(n):
         ram = bytearray(rnd.randrange(256) for _ in range(0xC000))
         ram[0x100:0x200] = bytes(0x100)
@@ -77,13 +91,27 @@ def difftest_instance(idiom, code, n=300, seed=1, live=0x3F, setup=None, extra_l
             if len(ev.notes) < 3:
                 ev.notes.append(f'a={a:02X} x={x:02X} y={y:02X}: {diff[0]}')
             continue
-        ev.passed += 1
         if timed:
             apple = ref['cycles'] - (6 if ref['stop'] == 'ret' else 0)
             coco = got['cycles'] - base
-            if apple >= DELAY_MIN:
+            if apple < floor:
+                short += 1
+            else:
                 ev.timed += 1
-                ev.max_timing_err = max(ev.max_timing_err, abs(coco / (apple * APPLE_TO_COCO) - 1))
+                err = abs(coco / (apple * APPLE_TO_COCO) - 1)
+                if apple * APPLE_TO_COCO > SLACK / TIMING_TOL:
+                    ev.max_timing_err = max(ev.max_timing_err, err)
+                else:
+                    ev.max_abs_err = max(ev.max_abs_err, abs(coco - apple * APPLE_TO_COCO))
+                if not timing_ok(coco, apple):
+                    if len(ev.notes) < 3:
+                        ev.notes.append(f'a={a:02X} x={x:02X} y={y:02X}: {apple} Apple cycles, {coco} CoCo '
+                                        f'({100 * err:.1f}% off)')
+                    continue
+        ev.passed += 1
+    if short:
+        ev.notes.append(f'{short} case(s) under {floor} Apple cycles not timed: the routine\'s fixed cost makes '
+                        f'them run long')
     if skipped:
         ev.notes.append(f'{skipped} random case(s) left the routine (not comparable)')
     return ev
@@ -155,7 +183,7 @@ def verify(m, mem, n=300, seed=1, render_lines=None):
     i = m.idiom
     if i.kind == 'rom_wait':
         loc = replace(i, entry=0x0800, end=0x080B, exits=())
-        return difftest_instance(loc, WAIT_6502, n=n, seed=seed, render_lines=render_lines)
+        return difftest_instance(loc, WAIT_6502, n=n, seed=seed, render_lines=render_lines, floor=0)
     if i.entry >= 0xC000:
         ev = Evidence()
         ev.notes.append(f'{i.kind}: ROM routine, not compared (no 6502 copy in the kit)')
@@ -175,7 +203,11 @@ def verify(m, mem, n=300, seed=1, render_lines=None):
                 return []
             if a and sum(a) >= DELAY_MIN:
                 ev.timed += 1
-                ev.max_timing_err = max(ev.max_timing_err, abs(sum(c) / (sum(a) * APPLE_TO_COCO) - 1))
+                err = abs(sum(c) / (sum(a) * APPLE_TO_COCO) - 1)
+                ev.max_timing_err = max(ev.max_timing_err, err)
+                if err > TIMING_TOL:
+                    return [f'mean click period {sum(c) / len(c) / APPLE_TO_COCO:.1f} Apple cycles, the Apple\'s '
+                            f'{sum(a) / len(a):.1f} ({100 * err:.1f}% off)']
             return []
         ev = difftest_instance(i, code, n=n, seed=seed, render_lines=render_lines, timed=False,
                                io=lambda rnd, ram: ClickLog(), check=per)

@@ -74,6 +74,7 @@
 	subd	#1
 	std	@SYM@_n
 	bne	@SYM@_lp
+	lda	@SYM@_ea		; A as on entry (a BIT / STA click keeps it)
 	puls	cc
 @EXITREGS@
 @EXIT@

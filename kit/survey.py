@@ -433,7 +433,8 @@ def draft_spec(cov, s):
         sym = ('n_' + k[0].lower().replace(' ', '_')) if k else 'n_rom_%04x' % a
         L.append(f"    0x{a:04X}: '{sym}',   # ROM {k[0] + ': ' + k[2] if k else '?'}")
     L += ['}', '', '# hardware idioms the survey proposes (section 7): check each against the listing, then uncomment',
-          '# (an exit into overlay code needs image=\'<name>\').  from kit.hw import Idiom', 'HW_IDIOMS = [']
+          '# (engine code only: an idiom whose exit is overlay code must stay a hand native).  from kit.hw import Idiom',
+          'HW_IDIOMS = [']
     L += [idiom_line(m, ids) for m, ids in s.get('matches', [])]
     L += [']', '', '# (lo, hi) of every replaced routine body: fill in from the listing', 'NATIVE_RANGES = []', '',
           '# translated addresses a native continues into', 'NATIVE_EXITS = []', '',
