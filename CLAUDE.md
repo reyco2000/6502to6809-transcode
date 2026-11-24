@@ -20,15 +20,15 @@ python3 -m tests.hw_checks [GROUP]   # hardware transcoder checks only (groups: 
                                      # lib_delay lib_io match match_io survey_idioms verify guide); also in selftest
 ```
 
-Reference port (needs the user's Karateka disk and Apple ROMs, paths in `ports/karateka/port.toml`):
+Reference port (a `ports/<name>/` package, not shipped with the kit; needs the user's disk and Apple ROMs, paths in its `port.toml`). Local details, if any, are in `CLAUDE.local.md`:
 ```
-python3 -m ports.karateka.snapshots
-python3 -m ports.karateka.test_engine -n 300 [--set engine|IMAGE] [--entry HHHH] [-v]   # one routine: --entry
-python3 -m ports.karateka.test_native -n 300 --ram 512
-python3 -m ports.karateka.build512   # build/karateka/karateka_512k.dsk  (LOADM"K3":EXEC)
-python3 -m ports.karateka.build128
+python3 -m ports.<name>.snapshots
+python3 -m ports.<name>.test_engine -n 300 [--set engine|IMAGE] [--entry HHHH] [-v]   # one routine: --entry
+python3 -m ports.<name>.test_native -n 300 --ram 512
+python3 -m ports.<name>.build512
+python3 -m ports.<name>.build128
 ```
-Regression baseline: both Karateka disks must stay byte-identical to the original k3port builds.
+Regression baseline: the reference port's 512K and 128K disks must stay byte-identical to their saved baseline builds.
 
 New ports are scaffolded outside the repo (`python3 -m kit.newport NAME --disk DSK` → `~/proyectos/NAME-coco3`) and driven through their `run.sh` (`snapshots`, `profile`, `survey`, `gen`, `test_engine`, `build512`/`build128`), which puts the kit on `PYTHONPATH`.
 
@@ -47,11 +47,11 @@ Pipeline (details in `docs/METHOD.md`):
 7. **Build** — `kit/build512.py` / `kit/build128.py` + `kit/fastload512.py`/`fastload128.py` + runtime `rt/t512|t128/*.asm` → RS-DOS `.dsk` (`kit/disk/mkdsk.py`, `lzss.py`).
 8. **MAME probes** — `kit/mame/*.lua` + `invcheck512/128.py` (invariant GIME == conv(Apple page)), `profile.py`.
 
-Kit modules are game-independent; a port supplies a spec module (`docs/SPEC.md`; generic parts in `kit/specbase.py`, paths from `port.toml` via `kit/portcfg.py`) and its thin `gen.py`/`build*.py`/`test_engine.py` wrappers call into the kit. `ports/karateka/` is the worked example; nothing in the kit depends on it.
+Kit modules are game-independent; a port supplies a spec module (`docs/SPEC.md`; generic parts in `kit/specbase.py`, paths from `port.toml` via `kit/portcfg.py`) and its thin `gen.py`/`build*.py`/`test_engine.py` wrappers call into the kit. Nothing in the kit depends on any port.
 
 ### Hardware transcoder (`kit/hw/`)
 - `kit/hw/apple2.py` is the single source for Apple II hardware: every `$C0xx` switch and firmware entry has one action (`Runtime`, `Latch`, `Ignore`, `Trap`, `IdiomOnly`). `gen.py` (I/O table, latches, `io_check`), `survey.py`, the builds' I/O stubs (`iocheck.stubs`) and the doc tables (`--doc`, checked by the self-test) all read it. Unmapped, trapped or loop-only accesses are generation errors unless the spec has an `HW_OVERRIDES` entry.
-- `Runtime(cond='HW_IOV')` handlers (`rt/hw/apple2/io_video.asm`) are appended to the runtime only when used. This keeps the Karateka disks byte-identical.
+- `Runtime(cond='HW_IOV')` handlers (`rt/hw/apple2/io_video.asm`) are appended to the runtime only when used. This keeps existing ports' disks byte-identical.
 - Idioms: `kit/hw/match.py` proposes them, `kit/hw/verify.py` tests them, and the user copies the ones they accept into `spec.HW_IDIOMS`. `kit/hw/idiom.expand` turns those into `NATIVE`/`NATIVE_RANGES`/`NATIVE_EXITS`, and `kit/hw/lib.py` renders `rt/hw/apple2/<kind>.asm` into `build/src/hw_inst.asm`. Mid-routine idioms exit with `jmp E<exit>`. Timing constants (`HW_OVH`, `*_OVA`, `TONE_FIX`) are calibrated against the difftests. Re-check them with the `verify`/`lib_*` groups after touching a template.
 
 ### Transcoder ABI (`kit/xc65.py`) — invariants to preserve
@@ -68,6 +68,6 @@ The Apple hi-res pages stay authoritative: game and natives draw into Apple RAM 
 ## Rules
 
 - **Never commit anything derived from a game disk**: `build/`, `*.dsk`, `*.woz`, `*.nib`, `*.bin`, ROMs, snapshots, generated source (see `.gitignore`). Specs hold addresses only.
-- **Bit-exact before fast**: a native must leave registers, flags and RAM as the 6502 routine does (as far as callers read them, per `report.txt`), proven by difftests (`ports/karateka/test_native.py` is the model), before optimizing.
+- **Bit-exact before fast**: a native must leave registers, flags and RAM as the 6502 routine does (as far as callers read them, per `report.txt`), proven by difftests (a port's `test_native.py`), before optimizing.
 - Compare speed like for like (same scene, CPU work per frame), not raw flips. Pitfalls from real ports are in `docs/LESSONS.md`.
 - Tests run in MAME headless (`-nothrottle`); playtesting is the user's job.

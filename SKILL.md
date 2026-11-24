@@ -30,7 +30,7 @@ Run all commands from the kit repo, or from a port made with `kit.newport` throu
 | 4 | **Survey: what to transcode** (hardware through the map `kit/hw/apple2.py`; section 7 proposes hardware idioms, section 8 ranks what will not transcode) | `./run.sh survey --verify` (each proposal tested against its 6502 code, timing included) | `build/survey.txt`, `build/draft_spec.py` |
 | 5 | Spec: confirm the candidates against the listing; fill `NATIVE`, `NATIVE_RANGES`, `NATIVE_EXITS`, `HW_IDIOMS` (uncomment the verified proposals you confirm), `HW_OVERRIDES` (only for trapped switches that do not matter), `SMC_*`, `TRAPS`, `CODE_RANGES`, `STAGES` (restart or call stages), `HIRES_ACCESS`, `ROMDATA` | `python3 -m kit.listing PORT RANGE` (executed code with counts); `kit.listing PORT --a2dis build/dis RANGE` (the `a2-disassemble` skill seeded with the profile's entries); `docs/DECIDE.md`, `docs/SPEC.md` | `./run.sh gen` has no errors (no unmapped or trapped hardware access) |
 | 6 | Differential test of the generated code | `./run.sh test_engine -n 300 [--set IMAGE]` | `diff: 0` |
-| 7 | Natives, for what the idiom library does not cover: start from `rt/natives/apple2/*`; test them bit-exact against the 6502 (Karateka `test_native.py` is the model) | | `diff: 0` |
+| 7 | Natives, for what the idiom library does not cover: start from `rt/natives/apple2/*`; test them bit-exact against the 6502 (a port's `test_native.py` is the model) | | `diff: 0` |
 | 8 | Build: choose the target (`docs/MEMORY.md`) | `./run.sh build512` / `build128` | disk built, budgets asserted |
 | 9 | MAME: boot, invariant, speed | `kit/mame/*.lua` (see "MAME probes") | 0 inconsistent; draws/frame ≈ Apple |
 | 10 | User playtest (the user runs XRoar); fix, then re-run steps 6-9 | | user confirms |
@@ -128,4 +128,3 @@ Most likely to be replaced first. Survey section 8 applies this list to the game
 - `docs/LESSONS.md`: pitfalls found in real ports.
 - `docs/COVERAGE.md`: the profile format.
 - `docs/machines/apple2.md`, `docs/machines/c64.md`.
-- Worked example: `ports/karateka/` (README there).

@@ -93,13 +93,13 @@ Other services:
 
 | pattern | typical 6502 | 6809 technique | template / example |
 |---|---|---|---|
-| sprite blitter | shift a shape by 0-6 dots, OR/AND/store into rows via a row table, clip | Pre-shifted tables (`LSLB`/`LDD B,Y`) or `MUL` by 2^(s+1). The mode (OR/AND/store) patched into one opcode. Inline the row pointer (`NBROW`). Map the bitmaps (`HRON`) only for visible draws. | Karateka `ports/karateka/src/t512/hires.asm` `nb_*` |
-| fill / clear | rectangle of a byte pattern | Jump into an unrolled `STD ,U++` run | `fill_template.asm`; Karateka `nh_fill` |
-| scroll / page copy | copy lines between pages | Compare before copying (skip identical lines). Tell the converter which lines moved (`vscroll`, `vr_rflag`): the GIME rows are moved with `PULU`/`PSHS` instead of reconverted. | Karateka `nh_scroll` |
+| sprite blitter | shift a shape by 0-6 dots, OR/AND/store into rows via a row table, clip | Pre-shifted tables (`LSLB`/`LDD B,Y`) or `MUL` by 2^(s+1). The mode (OR/AND/store) patched into one opcode. Inline the row pointer (`NBROW`). Map the bitmaps (`HRON`) only for visible draws. | port-specific (`src/t512/hires.asm`) |
+| fill / clear | rectangle of a byte pattern | Jump into an unrolled `STD ,U++` run | `fill_template.asm` |
+| scroll / page copy | copy lines between pages | Compare before copying (skip identical lines). Tell the converter which lines moved (`vscroll`, `vr_rflag`): the GIME rows are moved with `PULU`/`PSHS` instead of reconverted. | port-specific |
 | VBL wait | `LDA $C019 / BMI` | `jsr rt_vbl` | **library `vbl_poll`** (proposed by the survey); `vbl.asm` |
 | monitor `WAIT` | `JSR $FCA8` | the same formula in CoCo cycles | **library `rom_wait`** (≤1.3%); `wait.asm` (2.9% slow) |
 | paddles | `PREAD` or a `$C070`/`$C064` count loop | Use `joy_x`/`joy_y`. Better: compute the value the game derives from the count (a class, a position). | **library `paddle_count`, `rom_pread`** for plain counts; `paddle.asm` |
-| tones | cycle-counted `$C030` loops, multi-voice players | The same period structure in Apple time; click with `$FF20 EOR #$FC`; poll keys where the 6502 did | **library `tone`** (single voice); `speaker.asm`, Karateka `sound.asm` for the rest |
+| tones | cycle-counted `$C030` loops, multi-voice players | The same period structure in Apple time; click with `$FF20 EOR #$FC`; poll keys where the 6502 did | **library `tone`** (single voice); `speaker.asm`; a port's own `sound.asm` for the rest |
 | level loader | RWTS + relocator + `JMP` into the level | `nt_load`: B = level → restore the level's pages, enter its snapshot state (`<IMAGE>_START`) | scaffold `src/t512|t128/start.asm` |
 | reboot | `JMP $C600`, game over | `nt_reboot` → `rt_start` (512K), or stream the boot image again (128K) | scaffold `start.asm` |
 
@@ -109,6 +109,6 @@ Other services:
 The library rows are `Idiom(...)` lines in `spec.HW_IDIOMS`, which the survey proposes (section 7, `--verify` for evidence). Their templates are in `rt/hw/apple2/`.
 
 ## 4. Testing natives
-A port's `test_native.py` (model: `ports/karateka/test_native.py`) assembles the natives with `XMMU` undefined, so the bitmaps sit identity-mapped at `$2000`/`$4000`. It then runs each native in `cc3sim` and the 6502 original on `kit/host/cpu6502` on the same random inputs, taken from snapshot state, and compares registers, flags and RAM. It prints the cost ratio, where 1.75 is real time.
+A port's `test_native.py` assembles the natives with `XMMU` undefined, so the bitmaps sit identity-mapped at `$2000`/`$4000`. It then runs each native in `cc3sim` and the 6502 original on `kit/host/cpu6502` on the same random inputs, taken from snapshot state, and compares registers, flags and RAM. It prints the cost ratio, where 1.75 is real time.
 - Randomize every input the routine reads, including modes, shifts and clip edges.
 - Keep the test count high (1,500+) before optimizing, and re-run after every speed change.

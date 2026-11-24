@@ -6,7 +6,7 @@
   * a tiny 6502 routine translated by xc65 and run against the 6502 reference in cc3sim
   * the scaffolder writes an importable port
   * the hardware transcoder (tests/hw_checks.py)
-For a full regression run the reference port: ports/karateka (needs the user's disk).
+For a full regression run a reference port (needs the user's disk).
 """
 import os
 import random

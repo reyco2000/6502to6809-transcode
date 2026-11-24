@@ -27,7 +27,7 @@ For copy-protected games, prefer `.woz` or `.nib`: a `.dsk` keeps only standard 
 - **File system:**
   - **DOS 3.3** (VTOC at track 17, sector 0): `a2disk cat` lists the files with type (`B` binary, `A` Applesoft, `T` text) and size. `a2disk get IMAGE "NAME" out.bin` extracts a file and prints a `B` file's load address.
   - **ProDOS** (volume directory at block 2): `cat` lists the paths with type, EOF and aux type (the load address for `BIN`/`SYS`). `get` extracts by path.
-  - **None:** the game reads raw tracks with its own loader (most commercial games: Karateka, Zaxxon). There are no files to extract; the snapshots are how the code is obtained.
+  - **None:** the game reads raw tracks with its own loader (most commercial games). There are no files to extract; the snapshots are how the code is obtained.
 
 ## 3. How does it boot? (needed for `HAND_OVER` and the level loader)
 1. Boot on the host and watch where it runs and what it touches. `kit/host/profile.py` with `--phase` names frame ranges; a quick probe that prints the busiest pages and the softswitches every 300 frames shows when loading stops (Disk II accesses `$C0E0-$C0EF` drop to 0). It also shows the idle loop of the title screen.

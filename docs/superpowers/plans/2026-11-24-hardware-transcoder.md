@@ -16,7 +16,7 @@
 ## Global Constraints
 - Matches are never auto-applied: nothing a matcher finds changes the build until the user moves it into `spec.py`.
 - No silent defaults: every hardware address translated code touches has an explicit map action or a spec override, or generation fails.
-- Karateka regression: `karateka_512k.dsk` and `karateka_128k.dsk` stay byte-identical with the current spec. New runtime code is assembled only when a port uses it.
+- The reference port regression: `<ref>_512k.dsk` and `<ref>_128k.dsk` stay byte-identical with the current spec. New runtime code is assembled only when a port uses it.
 - Never commit game bytes, ROMs, snapshots, generated source or disks: everything derived goes to `build/`.
 - Native contract (`docs/NATIVES.md` §2): A = A, B = X, `RY` = Y, S = 6502 stack, DP = 0; produce exactly the registers/flags/RAM the callers read.
 - Apple time: `APPLE_TO_COCO = 1.75` CoCo cycles per Apple cycle.
@@ -27,9 +27,9 @@
 ## Before you start
 - The repo has **no commits yet** (everything is untracked). Ask the user before making the first commit; the commit steps below assume they agreed.
 - Build the simulator: `make -C sim`. Baseline: `python3 -m tests.selftest` → `ALL OK`.
-- If the user's Karateka disk and ROMs are present (paths in `ports/karateka/port.toml`), save the baseline disks:
-  `python3 -m ports.karateka.build512 && python3 -m ports.karateka.build128 && mkdir -p build/karateka/baseline && cp build/karateka/karateka_*k.dsk build/karateka/baseline/`.
-  Every task that says "Karateka identity" means: rebuild both and `cmp` against the baseline. Without the disk, say so in the task report; don't skip silently.
+- If the reference port's disk and ROMs are present (paths in `ports/<ref>/port.toml`), save the baseline disks:
+  `python3 -m ports.<ref>.build512 && python3 -m ports.<ref>.build128 && mkdir -p build/<ref>/baseline && cp build/<ref>/<ref>_*k.dsk build/<ref>/baseline/`.
+  Every task that says "reference port identity" means: rebuild both and `cmp` against the baseline. Without the disk, say so in the task report; don't skip silently.
 
 ## Review Focus
 1. **A counter that is 0 on entry** (`DEX/BNE` with X = 0 runs 256 passes; a tone period of 0 = 256). The library routines must wrap exactly like the 6502. Tests: Task 6 (`delay`), Task 7 (`tone`).
@@ -134,7 +134,7 @@ ok &= check('survey: no SOFTSW table left', not hasattr(survey, 'SOFTSW') and no
 ```
 - [ ] **Step 2: Run** `python3 -m tests.hw_checks survey` → FAIL.
 - [ ] **Step 3: Implement** the changes above. Section 5 (ROM calls) prints `apple2.rom(a)`, or `unknown: look it up (a2-help skill)`.
-- [ ] **Step 4: Run** the group → pass; `python3 -m tests.selftest` → `ALL OK`. If the Karateka coverage exists: `python3 -m kit.survey ports/karateka > /tmp/s.txt` runs without error.
+- [ ] **Step 4: Run** the group → pass; `python3 -m tests.selftest` → `ALL OK`. If the reference port's coverage exists: `python3 -m kit.survey ports/<ref> > /tmp/s.txt` runs without error.
 - [ ] **Step 5: Commit** `refactor(survey): classify hardware through kit.hw`.
 
 ### Task 3: No silent defaults
@@ -151,7 +151,7 @@ ok &= check('survey: no SOFTSW table left', not hasattr(survey, 'SOFTSW') and no
     - An error is `"$C05E wr: double hi-res (AN3) not supported (spec HW_OVERRIDES to allow)"` for `Trap`, `"$C064 rd: single access to a loop-only switch; see idioms paddle_count, rom_pread"` for `IdiomOnly`, and `"$Cxxx: not in the hardware map"` for unmapped addresses.
     - `conds` is the set of `Runtime.cond` values the used symbols need.
     - A symbol for an address in `io_mem` is skipped: those are latch loads and never emitted, as today.
-  - `stubs(used: set[str], defined: set[str], overrides=None) -> list[str]`: stub lines only for `Ignore` entries not in `defined`. A read stub sets `IOV` to `value` (`clr IOV` when 0, so Karateka's bytes stay the same). Raises `SystemExit` with the `check` errors for anything else undefined.
+  - `stubs(used: set[str], defined: set[str], overrides=None) -> list[str]`: stub lines only for `Ignore` entries not in `defined`. A read stub sets `IOV` to `value` (`clr IOV` when 0, so the reference port's bytes stay the same). Raises `SystemExit` with the `check` errors for anything else undefined.
 - `gen.IO_MEM` default = `{a: action.sym for each Latch rd entry}` (same as today: `$C000`/`$C061`/`$C062`). A spec's `IO_MEM` still replaces it entirely (Review Focus 4).
 - Spec attribute `HW_OVERRIDES: dict[int, action]`, read by `gen.use` and by both builds.
 
@@ -172,7 +172,7 @@ ok &= check('iocheck: spec IO_MEM wins', e == [])                     # Review F
 ```
 - [ ] **Step 2: Run** `python3 -m tests.hw_checks iocheck` → FAIL.
 - [ ] **Step 3: Implement** `iocheck.py`, and wire it into `gen.build`: errors → `SystemExit` with every error line, after all files are written so the user can inspect them. Replace both builds' `io_defaults` with `iocheck.stubs`. Add a `HW_OVERRIDES` row to `docs/SPEC.md`.
-- [ ] **Step 4: Run** the group → pass; `python3 -m tests.selftest` → `ALL OK`; Karateka identity (both disks `cmp` equal).
+- [ ] **Step 4: Run** the group → pass; `python3 -m tests.selftest` → `ALL OK`; reference port identity (both disks `cmp` equal).
 - [ ] **Step 5: Commit** `feat(hw): no silent I/O defaults; HW_OVERRIDES`.
 
 ### Task 4: Video-mode and status handlers; generated docs tables
@@ -208,7 +208,7 @@ ok &= check('hw: Runtime labels exist', <every Runtime entry without cond has io
 ```
 - [ ] **Step 2: Run** `python3 -m tests.hw_checks iov docs` → FAIL.
 - [ ] **Step 3: Implement** `io_video.asm`, the `ifdef HW_IOV` includes, the build equate, `render_doc`, and regenerate both doc blocks with `python3 -m kit.hw.apple2 --doc`. Keep the prose around the tables, including the "other `$C0xx`" row in `NATIVES.md`, which now says "see the map; unmapped = generation error".
-- [ ] **Step 4: Run** the groups → pass; `python3 -m tests.selftest` → `ALL OK`; Karateka identity (Karateka never sets `HW_IOV`).
+- [ ] **Step 4: Run** the groups → pass; `python3 -m tests.selftest` → `ALL OK`; reference port identity (the reference port never sets `HW_IOV`).
 - [ ] **Step 5: Commit** `feat(rt): video-mode/status handlers behind HW_IOV; generated map docs`.
 
 ## Phase 2: library routines and accepted idioms
@@ -250,8 +250,8 @@ ok &= check('idiom: vbl_poll vs 6502 loop', difftest_kind('vbl_poll', bytes([0xA
 ```
   `difftest_kind(kind, code_6502, n)` is a helper in `tests/hw_checks.py`. It places the 6502 bytes at `$0800`, builds a `kit.difftest.Harness` from `render(Idiom(kind, 0x800, ...))` with stubs for `rt_vbl`, and compares registers/flags (live mask from `xc65.routine_contract`) and RAM against `difftest.reference` on random inputs. `WAIT_6502_BYTES` is the monitor `WAIT` routine written out from its documented source (`SEC / PHA / SBC #1 / BNE / PLA / SBC #1 / BNE / RTS`); that is code, not ROM bytes.
 - [ ] **Step 2: Run** `python3 -m tests.hw_checks idiom` → FAIL.
-- [ ] **Step 3: Implement** as specified. `gen.build` writes `hw_inst.asm` (empty when there are no idioms), and the builds append it only when it's non-empty, which keeps Karateka identical.
-- [ ] **Step 4: Run** the group → pass; `python3 -m tests.selftest` → `ALL OK`; Karateka identity.
+- [ ] **Step 3: Implement** as specified. `gen.build` writes `hw_inst.asm` (empty when there are no idioms), and the builds append it only when it's non-empty, which keeps the reference port identical.
+- [ ] **Step 4: Run** the group → pass; `python3 -m tests.selftest` → `ALL OK`; reference port identity.
 - [ ] **Step 5: Commit** `feat(hw): HW_IDIOMS spec form, expansion, vbl_poll and rom_wait routines`.
 
 ### Task 6: `delay` routine
@@ -326,7 +326,7 @@ ok &= check('rom_bell: assembles, 100 clicks pairs', <cc3sim run: 200 writes to 
 - Matchers, `def m_<kind>(mem, code, loop_or_call) -> Match | NearMiss | None`:
   - `m_vbl_poll`: the loop body is only `LDA`/`BIT $C019` + `BPL`/`BMI` back. It optionally includes the paired loop for the opposite edge that immediately follows: the range then covers both.
   - `m_delay`: counted loops with no memory writes and no I/O, nested at most 2 deep, total ≥ `DELAY_MIN` Apple cycles for the largest counter value. Counter decrement by `DEX`/`DEY`/`SBC #1` (with `SEC`). Writes to RAM → `NearMiss('delay', …, 'loop body writes memory')`.
-  - `m_rom`: a `JSR` to a `ROM` entry whose action is `IdiomOnly` → a `Match` whose range is the single `JSR`, the instance replacing the ROM entry itself. `entry` = the ROM address, so `NATIVE[$FCA8]` works like Karateka's `nt_wait`.
+  - `m_rom`: a `JSR` to a `ROM` entry whose action is `IdiomOnly` → a `Match` whose range is the single `JSR`, the instance replacing the ROM entry itself. `entry` = the ROM address, so `NATIVE[$FCA8]` works like the reference port's `nt_wait`.
 - `exit_regs` comes from a tiny symbolic pass over the loop: a counter decremented to the `BNE` fall-through is 0; a register loaded with an immediate and not changed after keeps it; any other register the routine changes is "unknown", and then the matcher returns a `NearMiss('<kind>', …, 'exit value of <reg> not determined')`.
 
 - [ ] **Step 1: Write failing checks** (synthetic code at `$0800`, `discover` over it):
@@ -364,7 +364,7 @@ ok &= check('survey: draft lists idiom commented out', '#   Idiom(\'tone\'' in s
 ok &= check('survey: idiom routine not in draft NATIVE', 'n_sound_0800' not in survey.draft_spec(cov, s_with_tone))
 ```
   `cov` and `s_with_tone` are a minimal coverage dict and survey result built in the test around `tone_code(0xAD)`.
-- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → pass, plus `tests.selftest`; if Karateka's coverage exists, `python3 -m kit.survey ports/karateka` runs.
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → pass, plus `tests.selftest`; if the reference port's coverage exists, `python3 -m kit.survey ports/<ref>` runs.
 - [ ] **Step 5: Commit** `feat(hw): tone and paddle matchers; survey proposes idioms`.
 
 ## Phase 4: evidence
@@ -399,7 +399,7 @@ ok &= check('rom_bell: 200 DAC writes', <cc3sim -w FF20 count == 200>)     # com
 ```
 - [ ] **Step 2: Run** `make -C sim && python3 -m tests.hw_checks verify` → FAIL.
 - [ ] **Step 3: Implement.** `broken_tone_instance` lets `verify` take an optional `render_override: list[str]` (test hook only).
-- [ ] **Step 4: Run** → pass; `python3 -m tests.selftest` → `ALL OK` (existing difftests unchanged: `io=None` keeps reads at 0); Karateka identity.
+- [ ] **Step 4: Run** → pass; `python3 -m tests.selftest` → `ALL OK` (existing difftests unchanged: `io=None` keeps reads at 0); reference port identity.
 - [ ] **Step 5: Commit** `feat(hw): timing evidence for idiom proposals (cc3sim -w, survey --verify)`.
 
 ## Phase 5: guidance
@@ -433,14 +433,14 @@ ok &= check('guide: DECIDE.md has ranking', 'Least likely to transcode' in open(
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement** the docs and `rank`. **Step 4: Run** → pass, plus `tests.selftest`.
 - [ ] **Step 5: Commit** `docs(skill): rank what is least likely to transcode; survey section 8`.
 
-### Task 12: Karateka acceptance (needs the user's disk)
+### Task 12: The reference port acceptance (needs the user's disk)
 
 **Files:** none changed unless a check fails.
 
-- [ ] **Step 1: Identity.** Rebuild both Karateka disks and `cmp` them against `build/karateka/baseline/` → identical.
-- [ ] **Step 2: Survey.** Run `python3 -m kit.survey ports/karateka --verify 300 > build/karateka/survey_hw.txt`. Expected in section 7:
-  - a `rom_wait` proposal for `$FCA8` (Karateka's `nt_wait`);
-  - `vbl_poll` proposals at Karateka's VBL-wait natives;
+- [ ] **Step 1: Identity.** Rebuild both reference port disks and `cmp` them against `build/<ref>/baseline/` → identical.
+- [ ] **Step 2: Survey.** Run `python3 -m kit.survey ports/<ref> --verify 300 > build/<ref>/survey_hw.txt`. Expected in section 7:
+  - a `rom_wait` proposal for `$FCA8` (the reference port's `nt_wait`);
+  - `vbl_poll` proposals at the reference port's VBL-wait natives;
   - a `paddle_count` proposal or a reasoned near-miss at the paddle loop with the `$6D2F` exit;
   - the two-voice player in `$0D00-$0DFF` as a `multi-voice` near-miss.
   Every proposal's evidence reads `verified N/N`.

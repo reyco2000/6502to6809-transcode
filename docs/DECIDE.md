@@ -31,7 +31,7 @@ Ranked from most to least likely to be replaced. `kit/survey.py` section 8 appli
 
 **V: video.**
 - The survey ranks routines by hi-res memory traffic. Routines that carry most of it (blitters, fills, scrolls, page copies, clears) become natives.
-- Any translated store into a hi-res page is invisible: nobody calls `vm_rect` for it. Run a per-image hi-res scan (Karateka `hires_scan.py` is the model): play each image on the host with random input and assert that no translated instruction touches `$2000-$5FFF`.
+- Any translated store into a hi-res page is invisible: nobody calls `vm_rect` for it. Run a per-image hi-res scan (a port's `hires_scan.py`): play each image on the host with random input and assert that no translated instruction touches `$2000-$5FFF`.
 
 **P: performance.**
 - A routine above about 5% of the estimated cycles that is pixel-, shift- or table-bound: the 6809's `MUL`, 16-bit registers, `PSHS`/`PULU` block moves and indexed modes beat the translation by 2-5×.

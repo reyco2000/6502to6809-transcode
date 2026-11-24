@@ -3,7 +3,7 @@
 Each entry is a mistake that cost time in a real port, and the check that avoids it. Add one per new pitfall.
 
 ## Measuring
-- **Compare the same scene.** Before comparing speed, check with screenshots that both machines show the same scene. For CPU-bound scenes, compare CPU work per frame (for example sprite draws per frame) rather than flips: the content of a fight or level varies between runs. (Karateka: a "81% speed" figure came from the host Apple standing idle while the CoCo was fighting; the real figure was 104%.)
+- **Compare the same scene.** Before comparing speed, check with screenshots that both machines show the same scene. For CPU-bound scenes, compare CPU work per frame (for example sprite draws per frame) rather than flips: the content of a fight or level varies between runs. (In one port, a "81% speed" figure came from the host Apple standing idle while the CoCo was fighting; the real figure was 104%.)
 - **Check the original before "fixing".** Odd frames, wipes and jitter may be in the original game. Run the host Apple model, or MAME `apple2e`, at the same moment first.
 - **MAME's windowed mode shows false jitter.** Judge smoothness full screen, or on XRoar or real hardware.
 - **Polling loops look hot** in a profile. Separate waiting from work before optimizing.
@@ -52,7 +52,7 @@ Each entry is a mistake that cost time in a real port, and the check that avoids
   - Random difftest inputs send pointers into ROM or I/O. The 6502 reference now reports those cases as `wild` (a ROM read the port does not model, any write at `$C100+`, and indirect reads of `$C0xx`) and skips them.
   - zp,X / zp,Y instructions the profile saw wrap past `$FF` get a wrap-safe sequence. Zaxxon's `$AE3D` clears all of zero page by wrapping; unwrapped, the translation would have zeroed the 6809 stack page.
   - SMC_OPS sites read their operand from memory, and the image's own opcode is added as a variant. Patch code often changes the operand too, and the original opcode may run before the first patch.
-  - The always-taken-branch check now looks back across stores. Karateka's engine lost three dead instructions; its disks differ only by that (verified by reverting the check: byte-identical), and engine and native tests pass 300/300.
+  - The always-taken-branch check now looks back across stores. The reference port's engine lost three dead instructions; its disks differ only by that (verified by reverting the check: byte-identical), and engine and native tests pass 300/300.
   - Translated hi-res access works (Zaxxon plays in MAME) but costs about 3x. The trace shows `hr_wr` + whole-page reconversion dominate, so natives with `vm_rect` remain the way to speed.
 - **Hi-res natives (Zaxxon `$0AA5`/`$0A33`/`$0959`/`$181D`, 2026-11-19):**
   - **ROM as a write sink.** Apple games point a buffer into ROM on purpose: Zaxxon's "no save-under" descriptor is `$F000`, and the Apple drops the writes. On the CoCo, `$C000-$FFFF` holds the runtime and code banks, so a native that copies the 6502's `STA (zp),Y` overwrote the runtime and the game crashed at the first wall.

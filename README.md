@@ -22,7 +22,7 @@ cd ~/proyectos/mygame-coco3
 | `rt/natives/apple2` | Native routine templates |
 | `sim/` | `cc3sim`: CoCo 3 unit-test machine (`make -C sim`) |
 | `docs/` | Method, decision rules, natives, spec, memory maps, lessons, machines |
-| `ports/karateka` | A worked example: the full spec and natives of a finished port (no game bytes) |
+| `ports/` | Port packages (spec + natives + wrappers); none ship with the kit, `kit.newport` scaffolds new ones outside the repo |
 
 **Requirements:**
 - Python 3.11+;
