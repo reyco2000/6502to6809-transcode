@@ -69,6 +69,7 @@ import sys
 
 from kit import portcfg, specbase
 from kit.xc65 import Native, FLAGS, ALL, A_, X_, Y_  # noqa: F401
+from kit.hw import Idiom, Ignore, Latch, Runtime  # noqa: F401
 
 PORT = portcfg.load(os.path.dirname(os.path.abspath(__file__)))
 SNAP, COVERAGE = PORT.snap, PORT.coverage
@@ -84,6 +85,8 @@ NATIVE = {{}}
 NATIVE_RANGES = []
 # translated addresses a native continues into (jmp E<addr>): extra roots in every image
 NATIVE_EXITS = []
+# accepted hardware idioms: copy them from build/draft_spec.py (survey section 7) once checked; kit/hw/lib.py
+HW_IDIOMS = []
 # opcode SMC bytes (differ between images but belong to shared code; handled by natives)
 SMC_BYTES = []
 # operand SMC sites: the translated instruction reads its operand from memory
@@ -93,6 +96,7 @@ CODE_RANGES = [(0x0200, 0x1FFF), (0x6000, 0xBFFF)]
 
 # ---- generator hooks (kit/gen.py)
 IO_MEM = {{0xC000: 'kb_kbd', 0xC061: 'btn0', 0xC062: 'btn1'}}   # I/O reads = plain loads of runtime latches
+HW_OVERRIDES = {{}}                   # {{addr: Ignore() | Latch(sym) | Runtime()}}: accept a trapped switch (kit/hw/apple2.py)
 ROMCONST = {{}}                       # ROM bytes the game reads as data, e.g. {{0xFBB3: 0x06}} (IIe ID)
 # natives with no 6502 body (ROM entries) or that never return; the others get their contract from the 6502 code
 NATIVE_CONTRACTS = {{

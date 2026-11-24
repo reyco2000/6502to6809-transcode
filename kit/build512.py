@@ -104,20 +104,10 @@ def symbols(path):
 
 
 def io_defaults(lines_sets, defined):
-    """I/O handlers the generated code references but the runtime does not define: reads give 0, writes do
-    nothing"""
-    import re
-    used = set()
-    for lines in lines_sets:
-        for ln in lines:
-            used |= set(re.findall(r'\bio_(?:rdx?|wrx?)_C0[0-9A-F]{2}\b', ln))
-    out = []
-    for s in sorted(used - defined):
-        if s.startswith('io_rd'):
-            out += [f'{s}\tpshs\tcc', '\tclr\tIOV', '\tpuls\tcc,pc']
-        else:
-            out += [f'{s}\trts']
-    return out
+    """I/O handlers the generated code references but the runtime does not define: stubs for the hardware map's
+    Ignore / Latch entries; anything else stops the build (kit/hw/iocheck.py)"""
+    from .hw import iocheck
+    return iocheck.stubs(iocheck.used_symbols(lines_sets), defined, getattr(spec, 'HW_OVERRIDES', {}))
 
 
 def start_lines(name, pfx, eng):
@@ -189,8 +179,14 @@ def build(out_dsk, verbose=True):
     nat_src = []
     for f in spec.NATIVE_SRC(512):
         nat_src += src(f)
+    if os.path.exists(os.path.join(sdir, 'hw_inst.asm')):     # accepted hardware idioms (spec HW_IDIOMS)
+        nat_src += [ln for ln in src(os.path.join(sdir, 'hw_inst.asm')) if ln.strip()]
     xiy = src(os.path.join(sdir, 'xiy.asm'))
     import re
+    from .hw import iocheck
+    for f in iocheck.runtime_extras(iocheck.used_symbols([eng_src] + list(ovl_src.values())),
+                                    getattr(spec, 'HW_OVERRIDES', {})):
+        rt_src = rt_src + src(os.path.join(RT_ROOT, f))     # handlers only some ports use (kit/hw/apple2.py)
     defined = set(re.findall(r'^(io_\w+)', '\n'.join(rt_src), re.M))
     iod = io_defaults([eng_src] + list(ovl_src.values()), defined)
 

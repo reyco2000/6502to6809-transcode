@@ -1,7 +1,7 @@
 # Method: static 6502 → 6809 transcoding for the CoCo 3
 
 ## Why static transcoding
-An emulator (interpreter or JIT) on a 1.79 MHz 6809 runs a 1.02 MHz 6502 game at about a third of full speed. The approach here, used first for Robotron and Karateka, works differently:
+An emulator (interpreter or JIT) on a 1.79 MHz 6809 runs a 1.02 MHz 6502 game at about a third of full speed. The approach here works differently:
 
 1. The game's code is **translated ahead of time**, instruction by instruction, into 6809 assembly.
 2. Liveness analysis keeps only the register and flag work later code reads, so ordinary game logic runs near real time: about 2-4 CoCo cycles per Apple cycle, where 1.75 is real time.

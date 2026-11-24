@@ -2,14 +2,25 @@
 
 The default is **transcode**. A routine becomes a native only for one of the reasons below. `kit/survey.py` finds candidates for each rule from the coverage profile. Confirm every candidate against a disassembly (`a2-disassemble`, `a2-trace-calls` skills) before putting it in the spec.
 
+## Least likely to transcode
+Ranked from most to least likely to be replaced. `kit/survey.py` section 8 applies the list to a game, one line per routine.
+
+1. **Loaders, RWTS, copy protection, relocators.** These are never transcoded. Snapshots capture what they produce, and the native level loader (`nt_load`) replaces them (rule L).
+2. **Cycle-timed sound beyond a single voice.** Multi-voice and duty-cycle players, sample playback, and notes that poll the keyboard are always hand-written natives (rule T). The survey reports them as `tone` near-misses with the reason.
+3. **Hardware the map traps on.** This covers the language card, IIe aux memory, double hi-res and slot I/O. Text, lo-res and mixed screens are tracked by the handlers but not displayed. `gen` refuses these accesses. Extend the kit first, or use `HW_OVERRIDES` when the access doesn't matter (rule H).
+4. **Code the transcoder rejects.** This is decimal mode (`SED`), `PHP/PLP`, `TSX/TXS`, `RTI`, `BRK`, `JMP (ind)`, the V flag and opcode SMC. Make it a native, or extend `xc65` (rules S and `METHOD.md`, "Known gaps").
+5. **Hot hi-res code.** Blitters, fills and scrolls transcode correctly but are too slow, so make them natives for speed (rules V and P).
+6. **Standard hardware idioms.** VBL polls, counted delays, single-voice tones, paddle count loops and `WAIT`/`PREAD`/`BELL` use the library routines in `rt/hw/apple2/`. The survey proposes them with test evidence (`--verify`); you confirm each one and add one `Idiom(...)` line to `HW_IDIOMS` (rules H, T and R).
+7. **Everything else transcodes.** That includes game logic, AI, tables, menus and keyboard polling.
+
 ## The rules
 
-**H: hardware.**
+**H: hardware.** Every address has an action in the hardware map (`kit/hw/apple2.py`; table in `NATIVES.md` §1).
 - A routine whose job is hardware I/O beyond what the runtime handlers already cover (`NATIVES.md`, table 1) becomes a native.
 - A single `LDA $C000` or `STA $C030` in game logic is fine: it is translated to a handler call.
 - A loop that polls hardware, or depends on an exact sequence of hardware accesses, is not. Examples: the Disk II nibble loop, `$C08x,X` slot I/O, language-card banking, video-mode sequences for mixed text/graphics.
 
-**T: timing.**
+**T: timing.** Check survey section 7 first: VBL polls, counted delays, single-voice tones, paddle counts and `WAIT` have library routines.
 - Code whose effect depends on its cycle count must be native, padded to Apple time (1 Apple cycle ≈ 1.75 CoCo cycles). Examples:
   - speaker tone loops (pitch = cycles between `$C030` clicks);
   - paddle reads (count until `$C064` falls);
@@ -20,7 +31,7 @@ The default is **transcode**. A routine becomes a native only for one of the rea
 
 **V: video.**
 - The survey ranks routines by hi-res memory traffic. Routines that carry most of it (blitters, fills, scrolls, page copies, clears) become natives.
-- Any translated store into a hi-res page is invisible: nobody calls `vm_rect` for it. Run a per-image hi-res scan (Karateka `hires_scan.py` is the model): play each image on the host with random input and assert that no translated instruction touches `$2000-$5FFF`.
+- Any translated store into a hi-res page is invisible: nobody calls `vm_rect` for it. Run a per-image hi-res scan (a port's `hires_scan.py`): play each image on the host with random input and assert that no translated instruction touches `$2000-$5FFF`.
 
 **P: performance.**
 - A routine above about 5% of the estimated cycles that is pixel-, shift- or table-bound: the 6809's `MUL`, 16-bit registers, `PSHS`/`PULU` block moves and indexed modes beat the translation by 2-5×.

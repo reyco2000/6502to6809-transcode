@@ -99,7 +99,7 @@ writer since that byte's previous execution; from then on every execution at the
 | `changed_execs` | executions at which some instruction byte had changed since its previous execution |
 
 An opcode SMC region (design 3.7) is the union of the spans `[site, site+len)` of overlapping opcode sites, e.g.
-Karateka $19E6 (`EAEA..` len 1 / `1100..` len 2) + $19E7 (`EA` len 1) = $19E6-$19E7; its variants are the tuples
+$19E6 (`EAEA..` len 1 / `1100..` len 2) + $19E7 (`EA` len 1) = $19E6-$19E7; its variants are the tuples
 of the first site truncated to the region length (regions up to 3 bytes are exact).  Executed bytes that are in
 `data_writes` but not `volatile` were written while the image was live but never seen changed at execution
 (patched before every execution with the same value, or rewritten identically): treat them as potentially volatile.

@@ -16,11 +16,13 @@ cd ~/proyectos/mygame-coco3
 | path | what |
 |---|---|
 | `kit/` | Transcoder (`xc65`), discovery/split, generator, build (512K/128K), differential test, survey, scaffolder, snapshots, the host Apple II (`kit/host`), Apple II disk images and CoCo disks (`kit/disk`: `a2disk` = identify, catalog, extract, convert .dsk/.po/.nib/.woz/.2mg), MAME probes (`kit/mame`) |
+| `kit/hw` | The hardware transcoder: the Apple II hardware map (`apple2.py`), idiom matchers, the routine library renderer, and test evidence (`survey --verify`) |
 | `rt/t512`, `rt/t128` | 6809 runtimes: video converter, input, sound, VBL, fast loader, disk streamer |
+| `rt/hw/apple2` | Hardware idiom routines (`vbl_poll`, `delay`, `tone`, `paddle_count`, `rom_wait`, `rom_pread`, `rom_bell`, the `hw_dly` timer) and video-mode handlers |
 | `rt/natives/apple2` | Native routine templates |
 | `sim/` | `cc3sim`: CoCo 3 unit-test machine (`make -C sim`) |
 | `docs/` | Method, decision rules, natives, spec, memory maps, lessons, machines |
-| `ports/karateka` | A worked example: the full spec and natives of a finished port (no game bytes) |
+| `ports/` | Port packages (spec + natives + wrappers); none ship with the kit, `kit.newport` scaffolds new ones outside the repo |
 
 **Requirements:**
 - Python 3.11+;

@@ -35,7 +35,7 @@ The user's reason for wanting this was not stated. The working assumption is tha
 
 ## Anti-goals (failure even if it "works")
 - A proposal that passes random tests but is wrong in timing (pitch, paddle range). Timed idioms must carry timing evidence, not only RAM equality.
-- Breaking the Karateka regression: both disks must stay byte-identical with the current spec.
+- Breaking the reference port regression: both disks must stay byte-identical with the current spec.
 - Matchers that propose many low-quality candidates. A near-miss is reported as a near-miss, never as a proposal.
 
 ## Approaches considered
@@ -70,7 +70,7 @@ New runtime support in phase 1, cheap and in both targets:
 - `$C020` and the annunciators `$C058-$C05D`: `ignore`. `$C05E`/`$C05F` (double hi-res): `trap`.
 - `$C080-$C08F` (language card), `$C011-$C018` (LC/aux status), `$C090-$C0FF` (slots) and `$C100-$CFFF`: `trap`, each with its reason.
 
-**Karateka regression:** every address Karateka's generated code reaches through `io_defaults` today must map to `ignore` with the same value, so the output stays byte-identical. The builder finds this set from Karateka's `build/src` and checks it. If an address doesn't fit `ignore`, the Karateka spec gets an override.
+**The reference port regression:** every address the reference port's generated code reaches through `io_defaults` today must map to `ignore` with the same value, so the output stays byte-identical. The builder finds this set from the reference port's `build/src` and checks it. If an address doesn't fit `ignore`, the reference port spec gets an override.
 
 ### 2. Library routines: `rt/hw/apple2/*.asm`
 These are lwasm macros (or `equ`-parameterised includes) that the generator instantiates into `build/src/hw_inst.asm`, one instance per accepted idiom. Each follows the native contract in `docs/NATIVES.md` and leaves the exit state the matcher extracted (for example Y = 0, Z = 1 after `DEY/BNE`).
@@ -128,12 +128,12 @@ The survey report ends with this list applied to the game: each routine in each 
   - the docs tables match `--doc`;
   - each matcher has synthetic positive and near-miss 6502 snippets;
   - each library routine difftests against a synthetic 6502 loop.
-- **Karateka** (the user's disk):
+- **Reference port** (the user's disk):
   - both disks are byte-identical;
-  - the survey proposes idioms at Karateka's existing `WAIT`, VBL and paddle natives, and reports its two-voice player as a near-miss.
+  - the survey proposes idioms at the reference port's existing `WAIT`, VBL and paddle natives, and reports its two-voice player as a near-miss.
 
 ## Phases
-1. Hardware map and its consumers, no silent defaults, new latches/handlers, docs generation, self-test. Karateka byte-identical.
+1. Hardware map and its consumers, no silent defaults, new latches/handlers, docs generation, self-test. Reference port byte-identical.
 2. Library routines, the `HW_IDIOMS` spec form and its generator expansion.
 3. Matchers and survey proposals or near-misses.
 4. `cc3sim` event logging and `--verify` evidence.

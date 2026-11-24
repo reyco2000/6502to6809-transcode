@@ -17,7 +17,7 @@ njp2	lsla				; 0..63 -> 0..252
 	rts
 ;
 ; (b) A game's own count loop (LDA $C070 / loop: LDA $C064,X / BPL done / INY / BNE loop): replace the whole loop
-;     with a native that produces the count, or better, the value the game derives from it (Karateka's game
-;     classified counts into left/centre/right: one native computes the class directly from joy_x).  Exit through
+;     with a native that produces the count, or better, the value the game derives from it (e.g. a game that
+;     classifies counts into left/centre/right: one native computes the class directly from joy_x).  Exit through
 ;     `jmp E<addr>` (the instruction after the loop; list it in spec.NATIVE_EXITS) with the registers the loop
 ;     leaves.
