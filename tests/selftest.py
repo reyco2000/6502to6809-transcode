@@ -5,6 +5,7 @@
   * hi-res -> GIME tables build
   * a tiny 6502 routine translated by xc65 and run against the 6502 reference in cc3sim
   * the scaffolder writes an importable port
+  * the hardware transcoder (tests/hw_checks.py)
 For a full regression run the reference port: ports/karateka (needs the user's disk).
 """
 import os
@@ -43,6 +44,8 @@ def main():
         good &= check('scaffolded port imports', ds.PORT.name == 'demo' and ds.STAGES == [])
     good &= check('xc65 + cc3sim difftest', _difftest())
     good &= _formats()
+    from tests import hw_checks
+    good &= hw_checks.run(check)
     print('ALL OK' if good else 'FAILURES')
     sys.exit(0 if good else 1)
 
