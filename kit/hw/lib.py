@@ -19,7 +19,7 @@ NEEDS_DLY = {'rom_wait', 'delay', 'tone', 'rom_bell'}
 # contracts of idioms that replace a ROM entry (no 6502 body in the RAM image): kind -> (use, defs) names
 ROM_CONTRACTS = {'rom_wait': ('A_', 'A_ | FLAGS'), 'rom_pread': ('X_', 'A_ | Y_ | FLAGS'),
                  'rom_bell': ('0', 'A_ | Y_ | FLAGS')}
-HW_OVH = 34                 # hw_dly fixed cost in 8-cycle units (calibrated by tests/hw_checks.py)
+HW_OVH = 56                 # hw_dly fixed cost in 8-cycle units (calibrated by tests/hw_checks.py)
 
 
 def load(src, reg='a'):
@@ -61,6 +61,47 @@ ROM_WAIT_OVA = 153          # rom_wait's own fixed cost in Apple cycles (calibra
 
 def prepare_rom_wait(i):
     return {'OVA': ROM_WAIT_OVA}
+
+
+DELAY_OVA = 96             # delay's own fixed cost in Apple cycles (calibrated by tests/hw_checks.py)
+MAX_APPLE = (1 << 21) - 1   # hw_dly's input range
+
+
+def exit_regs(p):
+    """lines that set the registers and N/Z the 6502 code leaves: params exit_regs {'a'|'x'|'y': value} and
+    exit_flags {'n': 0|1, 'z': 0|1} (default: N=0, Z=1, as after a counter reaches 0); C and V are kept"""
+    out = []
+    for r, v in sorted(p.get('exit_regs', {}).items()):
+        if r == 'a':
+            out += [f'\tlda\t#${v:02X}']
+        elif r == 'x':
+            out += [f'\tldb\t#${v:02X}']
+        elif r == 'y':
+            out += ['\tclr\tRY'] if v == 0 else ['\tpshs\ta', f'\tlda\t#${v:02X}', '\tsta\tRY', '\tpuls\ta']
+        else:
+            raise ValueError(f'exit_regs: bad register {r!r}')
+    if out:
+        out = ['\tpshs\tcc'] + out + ['\tpuls\tcc']    # CLR/LD change C and V: keep the 6502's C
+    f = p.get('exit_flags', {'n': 0, 'z': 1})
+    out += ['\tandcc\t#$F3']
+    bits = (0x08 if f.get('n') else 0) | (0x04 if f.get('z') else 0)
+    if bits:
+        out += [f'\torcc\t#${bits:02X}']
+    return out
+
+
+def prepare_delay(i):
+    p = i.params
+    inner = p.get('inner')
+    ip = p['inner_pass'] if inner else 0
+    op, c = p['outer_pass'], p.get('const', 0)
+    if ip * 256 + op > 0xFFFF or c + 256 * (op + 256 * ip) > MAX_APPLE:
+        raise ValueError(f'{symbol(i)}: delay too long for hw_dly')
+    sub = DELAY_OVA - c
+    if not 0 <= sub <= 0xFFFF:
+        raise ValueError(f'{symbol(i)}: const {c} out of range')
+    return {'LOAD_OUTER': load(p['outer']), 'LOAD_INNER': load(inner) if inner else ['\tlda\t#1'],
+            'INNER_PASS': ip, 'OUTER_PASS': op, 'SUB': sub, 'EXITREGS': exit_regs(p)}
 
 
 def render(i):

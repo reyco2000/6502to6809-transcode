@@ -257,6 +257,41 @@ def g_idiom(check):
     return ok
 
 
+# LDX #0 / L: LDY #0 / M: DEY / BNE M / DEX / BNE L / RTS  (256 x 256 passes)
+DELAY_00 = bytes([0xA2, 0x00, 0xA0, 0x00, 0x88, 0xD0, 0xFD, 0xCA, 0xD0, 0xF8, 0x60])
+# L: LDY #3 / M: DEY / BNE M / DEX / BNE L / RTS  (outer count = X on entry)
+DELAY_X3 = bytes([0xA0, 0x03, 0x88, 0xD0, 0xFD, 0xCA, 0xD0, 0xF8, 0x60])
+# L: LDY $10 / M: DEY / BNE M / DEX / BNE L / RTS  (inner count from zero page)
+DELAY_XZ = bytes([0xA4, 0x10, 0x88, 0xD0, 0xFD, 0xCA, 0xD0, 0xF8, 0x60])
+
+
+@group('lib_delay')
+def g_lib_delay(check):
+    from kit.hw import Idiom
+    from kit.hw.verify import difftest_instance
+    ok = True
+    xy0 = {'x': 0, 'y': 0}
+    i = Idiom('delay', 0x0800, 0x080A, params=dict(outer=('imm', 0), inner=('imm', 0), inner_pass=5, outer_pass=6,
+                                                     const=1, exit_regs=xy0))
+    r = difftest_instance(i, DELAY_00, n=3)
+    ok &= check(f'delay: 256 x 256 passes, regs/flags/RAM ({r})', r.passed == r.cases > 0)
+    ok &= check(f'delay: 256 x 256 passes, timing ({r.max_timing_err:.4f})', r.timed and r.max_timing_err <= 0.02)
+    i = Idiom('delay', 0x0800, 0x0808, params=dict(outer=('x',), inner=('imm', 3), inner_pass=5, outer_pass=6,
+                                                     const=-1, exit_regs=xy0))
+    r = difftest_instance(i, DELAY_X3, n=150)
+    ok &= check(f'delay: outer count from X (0 = 256) ({r})', r.passed == r.cases > 0)
+    ok &= check(f'delay: outer from X, timing ({r.max_timing_err:.4f})', r.timed and r.max_timing_err <= 0.02)
+    edge = lambda rnd, ram, a, x, y, p: (a, rnd.choice([0, 1, 2, 255]), y, p)
+    r = difftest_instance(i, DELAY_X3, n=12, setup=edge, timed=False)
+    ok &= check(f'delay: X = 0, 1, 2, 255 exact ({r})', r.passed == r.cases > 0)
+    i = Idiom('delay', 0x0800, 0x0808, params=dict(outer=('x',), inner=('zp', 0x10), inner_pass=5, outer_pass=7,
+                                                     const=-1, exit_regs=xy0))
+    r = difftest_instance(i, DELAY_XZ, n=100)
+    ok &= check(f'delay: inner count from zero page ({r})', r.passed == r.cases > 0)
+    ok &= check(f'delay: inner from zero page, timing ({r.max_timing_err:.4f})', r.timed and r.max_timing_err <= 0.02)
+    return ok
+
+
 def run(check, only=None):
     ok = True
     for name, fn in GROUPS.items():
