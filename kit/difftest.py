@@ -128,9 +128,28 @@ class Harness:
             if m:
                 self.syms[m.group(1)] = int(m.group(2), 16)
         self.size = os.path.getsize(self.bin)
+        self.owned = self._owned(list(code_lines) + list(extra_lines))
         self.image = open(self.bin, 'rb').read()
         if 0xC000 + self.size > 0xFBE0 - 0x100:
             raise RuntimeError(f'test image too big: {self.size}')
+
+    _ST = {'sta': 1, 'stb': 1, 'std': 2, 'stx': 2, 'sty': 2, 'stu': 2, 'sts': 2, 'clr': 1, 'inc': 1, 'dec': 1,
+           'com': 1, 'neg': 1, 'lsl': 1, 'asl': 1, 'lsr': 1, 'asr': 1, 'rol': 1, 'ror': 1}
+
+    def _owned(self, lines):
+        """bytes the code writes by name (its variables, self-patched operands: `sta zv`, `sta lbl+1`); a pointer
+        store that leaks into ROM is indexed, never named"""
+        own = set()
+        for ln in lines:
+            p = ln.split('\t')
+            if len(p) < 3 or p[1].lower() not in self._ST:
+                continue
+            m = re.match(r'^[<>]?([A-Za-z_][A-Za-z_0-9]*)(?:\+(\$[0-9A-Fa-f]+|\d+))?$', p[2].split(';')[0].strip())
+            if m and m.group(1) in self.syms:
+                off = m.group(2) or '0'
+                a = self.syms[m.group(1)] + (int(off[1:], 16) if off.startswith('$') else int(off))
+                own.update(range(a, a + self._ST[p[1].lower()]))
+        return own
 
     def run(self, ram, label, a, x, y, p, max_instr=3000000, watch=()):
         """-> dict(stop=6502 addr or 'ret' or 'timeout', a, x, y, p6502, ram)"""
@@ -157,10 +176,57 @@ class Harness:
         pf = (0x80 if occ & 0x08 else 0) | (0x02 if occ & 0x04 else 0) | (0x01 if occ & 0x01 else 0)
         return {'stop': 'ret' if stop == 0xFFFF else self.stub_id.get(stop, f'?{stop}'),
                 'a': o[0x10], 'x': o[0x11], 'y': o[0x12], 'p': pf, 'ram': open(orb, 'rb').read(),
-                'hi': open(ohb, 'rb').read(), 'image': self.image,
+                'hi': open(ohb, 'rb').read(), 'image': self.image, 'owned': self.owned,
                 'cycles': int(cyc.group(1)),
                 'writes': [(int(m.group(1), 16), int(m.group(2), 16), int(m.group(3))) for m in
                            re.finditer(r'^w ([0-9A-F]{4}) v=([0-9A-F]{2}) cycles=(\d+)$', r.stdout, re.M)]}
+
+
+# Dirty-rectangle check for hi-res natives.  The bit-exact compare cannot see a vm_rect that misses a changed
+# byte (the real converter then keeps the stale pixels).  Put RECT_LINES in the harness's extra_lines (it defines
+# vm_rect / vm_page and vr_y0 vr_y1 vr_c0 vr_c1) and call rect_misses after each run.
+RECT_LOG = 64
+RECT_LINES = ['vm_rect\tpshs\tcc,d,x',          # log (A, y0, y1, c0, c1); RECT_LOG entries, then "overflow"
+              '\tldb\tvrlog_n', f'\tcmpb\t#{RECT_LOG}', '\tbhs\tvrl_x', '\tincb', '\tstb\tvrlog_n', '\tdecb',
+              '\tlda\t#5', '\tmul', '\tldx\t#vrlog', '\tleax\td,x', '\tlda\t1,s', '\tsta\t,x',
+              '\tlda\tvr_y0', '\tsta\t1,x', '\tlda\tvr_y1', '\tsta\t2,x', '\tlda\tvr_c0', '\tsta\t3,x',
+              '\tlda\tvr_c1', '\tsta\t4,x', 'vrl_x\tpuls\tcc,d,x,pc',
+              'vm_page\tpshs\tcc,b', f'\tldb\t#{RECT_LOG}', '\tstb\tvrlog_n', '\tpuls\tcc,b,pc',  # whole page
+              'vrlog_n\tfcb\t0', f'vrlog\trmb\t{RECT_LOG * 5}',
+              'vr_y0\trmb\t1', 'vr_y1\trmb\t1', 'vr_c0\trmb\t1', 'vr_c1\trmb\t1']
+
+
+def _hr_rows():
+    m = {}
+    for y in range(192):
+        b = (y & 7) * 0x400 + ((y >> 3) & 7) * 0x80 + (y >> 6) * 0x28
+        for c in range(40):
+            m[b + c] = (y, c)
+    return m
+
+
+_HR = _hr_rows()
+
+
+def rect_misses(before, got, harness):
+    """hi-res bytes ($2000-$5FFF) the run changed that no logged vm_rect covers: [(addr, line, col)].
+    A rectangle counts for the page of its A ($20-$3F page 1, $40-$5F page 2); vm_page or a log overflow
+    covers everything."""
+    hi, base = got['hi'], 0xC000
+    n = hi[harness.syms['vrlog_n'] - base]
+    if n >= RECT_LOG:
+        return []
+    lg = harness.syms['vrlog'] - base
+    rects = [tuple(hi[lg + 5 * i: lg + 5 * i + 5]) for i in range(n)]
+    out = []
+    for a in range(0x2000, 0x6000):
+        if before[a] == got['ram'][a] or (a & 0x1FFF) not in _HR:
+            continue
+        y, c = _HR[a & 0x1FFF]
+        pg = a >> 13
+        if not any(p >> 5 == pg and y0 <= y <= y1 and c0 <= c <= c1 for p, y0, y1, c0, c1 in rects):
+            out.append((a, y, c))
+    return out
 
 
 def untested(coverage, ranges, pcs, mems=(None,)):
@@ -186,7 +252,7 @@ class RefBus:
         # 'ignore': the Apple drops it (ROM), recorded in romw: games use ROM as a write sink on purpose, and the
         # code under test must drop it too (on the CoCo that address range is the runtime / code banks)
         self.rom_writes = rom_writes
-        self.romw = set()
+        self.romw = {}          # address -> last value the 6502 wrote there
 
     indirect = False            # the current instruction is (zp),Y / (zp,X): an I/O address there is a stray pointer
 
@@ -208,7 +274,7 @@ class RefBus:
             self.ram[a] = v
         elif a >= 0xC100:
             if self.rom_writes == 'ignore':
-                self.romw.add(a)
+                self.romw[a] = v
             else:
                 self.wild = True
 
@@ -276,9 +342,13 @@ def compare(ref, got, live, ignore=()):
     for f, m, bit in (('N', N_, 0x80), ('Z', Z_, 0x02), ('C', C_, 0x01)):
         if live & m and (ref['p'] & bit) != (got['p'] & bit):
             d.append(f'flag {f} ref={int(bool(ref["p"] & bit))}')
-    hit = [a for a in sorted(ref.get('romw', ())) if 'hi' in got and a - 0xC000 < len(got['hi'])
-           and got['hi'][a - 0xC000] != (got['image'][a - 0xC000] if a - 0xC000 < len(got['image']) else 0)]
-    if hit:                                 # the 6502 wrote into ROM (dropped); the code under test did not drop it
+    # the 6502 wrote into ROM (dropped); the code under test did not drop it.  Only bytes now holding the value the
+    # 6502 wrote count: the code area also holds the natives' own variables and self-patched operands, which change.
+    romw = ref.get('romw', {})
+    hit = [a for a in sorted(romw) if 'hi' in got and a - 0xC000 < len(got['hi'])
+           and got['hi'][a - 0xC000] != (got['image'][a - 0xC000] if a - 0xC000 < len(got['image']) else 0)
+           and got['hi'][a - 0xC000] == romw[a] and a not in got.get('owned', ())]
+    if hit:
         d.append(f'wrote ROM addresses the Apple ignores: ' + ' '.join(f'${a:04X}' for a in hit[:4]))
     rr, gr = ref['ram'], got['ram']
     ign = set(ignore)

@@ -4,7 +4,7 @@
 -- (32K).  Check with invcheck.py (GIME = conversion of the dumped page).  Runtime variables: rt_tick $E007,
 -- v_shown $E017.  MMU registers read back with floating-bus bits 6-7: restore them AND $3F.
 -- Env: GBLK (first GIME block), APBLK (block of hi-res page 1), VRN (vr_n1), VPON (vp_on, vp_dst follows),
--- VREF (v_ref), hex.
+-- VREF (v_ref), HRD (hr_d1, when the runtime has HIRES_ACCESS: pending whole-page marks), hex.
 local f, g, n = 0, nil, 0
 local sp = manager.machine.devices[':maincpu'].spaces['program']
 local IN = dofile((os.getenv('KIT') or '.') .. '/kit/mame/input.lua')
@@ -15,6 +15,7 @@ local apblk = tonumber(os.getenv('APBLK') or '11', 16)
 local vrn, vpon = tonumber(os.getenv('VRN') or '0', 16), tonumber(os.getenv('VPON') or '0', 16)
 local skipped = 0
 local vref = tonumber(os.getenv('VREF') or '0', 16)
+local hrd = tonumber(os.getenv('HRD') or '0', 16)   -- hr_d1 (HIRES_ACCESS ports): page written by hr_wr, not yet marked
 local function rdblk(blk, len)
   local o0, o1 = sp:read_u8(0xFFA2) & 0x3F, sp:read_u8(0xFFAA) & 0x3F
   sp:write_u8(0xFFA2, blk) sp:write_u8(0xFFAA, blk)
@@ -33,7 +34,7 @@ emu.register_frame_done(function() f = f + 1
     -- scroll of it), the GIME buffer must equal the conversion of that Apple page.  Env VREF (v_ref), hex.
     local shown = sp:read_u8(0xE017)
     if manager.machine.devices[':maincpu'].state['S'].value < 0x4000 and shown < 2 and sp:read_u8(vref) == shown
-       and sp:read_u8(vrn + shown) == 0 and not (sp:read_u8(vpon) ~= 0 and sp:read_u8(vpon + 1) == shown) then
+       and sp:read_u8(vrn + shown) == 0 and (hrd == 0 or sp:read_u8(hrd + shown) == 0) and not (sp:read_u8(vpon) ~= 0 and sp:read_u8(vpon + 1) == shown) then
       out:write(string.char(n % 2, shown, (f - g) % 256, math.floor((f - g) / 256)))
       out:write(rdblk(apblk + shown, 8192)) for b = 0, 3 do out:write(rdblk(gblk + b, 8192)) end
       n = n + 1

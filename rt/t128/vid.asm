@@ -56,6 +56,7 @@ vc_nxd	equ	$37			; log: destination that continues the current run (2 bytes; 0: 
 vc_cc	equ	$39			; commit: CC on entry
 vc_ar	equ	$3E			; area of the list (pairs x lines, 2 bytes)
 VC_AREA	equ	0			; normal conversions with a smaller area go straight to the screen (0: none; all are staged)
+VC_GAP	equ	12			; unchanged lines that end a change box (vc_emit)
 VC_SYNC	equ	1500			; log bytes from which the commit waits for the beam (smaller: at once)
 VC_BIG	equ	3900			; from here it takes over a frame: start at the top of the picture, else at VSYNC
 VC_LOGEND equ	$2000			; log: the whole block
@@ -525,15 +526,22 @@ vf_1	ldd	,y			; line end
 	lda	<vc_y1			; line vc_y1+1-vc_lc
 	inca
 	suba	<vc_lc
-	sta	<vc_cy1
 	ldb	<vc_t
 	tst	<vc_cf
-	bne	vf_b1
-	sta	<vc_cy0
+	beq	vf_b0
+	pshs	a
+	suba	<vc_cy1
+	cmpa	#VC_GAP
+	puls	a
+	blo	vf_b3
+	pshs	d			; VC_GAP lines with no change since the last one: report the box so far,
+	lbsr	vc_emit			; so far-apart changes do not make one big box in the other page's list
+	puls	d
+vf_b0	sta	<vc_cy0
 	stb	<vc_cp0
 	stb	<vc_cp1
 	inc	<vc_cf
-	bra	vf_b2
+vf_b3	sta	<vc_cy1
 vf_b1	cmpb	<vc_cp0
 	bhs	vf_b2
 	stb	<vc_cp0
@@ -666,7 +674,12 @@ vc_rowd	ldd	<vc_ry
 vc_rdone
 	tst	<vc_cf			; the shadow changed here: the other page may now differ from it
 	beq	vc_rd1
-	lda	<vc_cy0
+	bsr	vc_emit
+vc_rd1	tst	<vc_n
+	lbne	vc_next
+	bra	vc_ret
+vc_emit	lda	<vc_cy0			; report the change box to the other page's list
+
 	ldb	<vc_cy1
 	std	>vr_y0
 	lda	<vc_cp0
@@ -679,10 +692,7 @@ vc_rdone
 	tst	<vc_page
 	beq	vc_rd0
 	lda	#$20
-vc_rd0	jsr	>vm_rect
-vc_rd1	tst	<vc_n
-	lbne	vc_next
-	bra	vc_ret
+vc_rd0	jmp	>vm_rect
 vc_map	sta	<vc_blk
 	tst	<vc_stg
 	bne	vc_mark

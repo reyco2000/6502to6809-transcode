@@ -30,7 +30,7 @@ Run all commands from the kit repo, or from a port made with `kit.newport` throu
 | 4 | **Survey: what to transcode** (hardware through the map `kit/hw/apple2.py`; section 7 proposes hardware idioms, section 8 ranks what will not transcode) | `./run.sh survey --verify` (each proposal tested against its 6502 code, timing included) | `build/survey.txt`, `build/draft_spec.py` |
 | 5 | Spec: confirm the candidates against the listing; fill `NATIVE`, `NATIVE_RANGES`, `NATIVE_EXITS`, `HW_IDIOMS` (uncomment the verified proposals you confirm), `HW_OVERRIDES` (only for trapped switches that do not matter), `SMC_*`, `TRAPS`, `CODE_RANGES`, `STAGES` (restart or call stages), `HIRES_ACCESS`, `ROMDATA` | `python3 -m kit.listing PORT RANGE` (executed code with counts); `kit.listing PORT --a2dis build/dis RANGE` (the `a2-disassemble` skill seeded with the profile's entries); `docs/DECIDE.md`, `docs/SPEC.md` | `./run.sh gen` has no errors (no unmapped or trapped hardware access) |
 | 6 | Differential test of the generated code | `./run.sh test_engine -n 300 [--set IMAGE]` | `diff: 0` |
-| 7 | Natives, for what the idiom library does not cover: start from `rt/natives/apple2/*`; test them bit-exact against the 6502 (a port's `test_native.py` is the model) | | `diff: 0` |
+| 7 | Natives, for what the idiom library does not cover: start from `rt/natives/apple2/*`; read `docs/NATIVES.md` §2 (contract) and `docs/LESSONS.md` first; test them bit-exact against the 6502 (a port's `test_native.py` is the model) | | `diff: 0`; `rect: 0` (hi-res natives, `difftest.rect_misses`); path coverage 0 never reached (`difftest.untested`); ROM writes recorded (`reference(..., rom_writes='ignore')`) |
 | 8 | Build: choose the target (`docs/MEMORY.md`) | `./run.sh build512` / `build128` | disk built, budgets asserted |
 | 9 | MAME: boot, invariant, speed | `kit/mame/*.lua` (see "MAME probes") | 0 inconsistent; draws/frame ≈ Apple |
 | 10 | User playtest (the user runs XRoar); fix, then re-run steps 6-9 | | user confirms |
@@ -38,6 +38,7 @@ Run all commands from the kit repo, or from a port made with `kit.newport` throu
 Rules that hold at every step:
 - **Never commit game bytes**, ROMs, snapshots, generated source or disks. They are derived from the user's disk and go to `build/` only.
 - **Bit-exact before fast.** A native must leave registers, flags and zero page exactly as the 6502 does, as far as the callers read them (`report.txt`). Prove it with the differential tests, then optimize.
+- **Bit-exact is not complete for hi-res natives.** Every changed bitmap byte must also lie in a reported `vm_rect`, or the screen keeps stale pixels. Before writing a native, check the pitfalls in `docs/LESSONS.md`: pointer stores into ROM (`$C000+` is the runtime), signed `B,X` indexing, SMC sites a native absorbs (remove them from `SMC_OPS`/`SMC_IMM`), and one rectangle per call rather than per point.
 - **The Apple bitmap stays authoritative.** Natives draw into Apple RAM; the converter derives the GIME screen from it. This keeps artifact colours exact and makes every frame checkable.
 - **Measure like for like.** Compare the speed of the same scene on both machines, checked with screenshots, as CPU work per frame (for example draws per frame), not as raw flips.
 - Tests run in MAME (headless, `-nothrottle`). Playtests are the user's.
@@ -112,9 +113,14 @@ Most likely to be replaced first. Survey section 8 applies this list to the game
 
 `ram` in `port.toml` picks the default; `./run.sh build512` and `./run.sh build128` build either one.
 
+## Converter test (offline)
+- `python3 -m kit.vidtest [-n N] [--vid FILE]`: runs the 512K converter (`rt/t512/vid.asm`) in cc3sim on generated scenes (sprites, diagonal lines, line ends, whole page, unchanged rectangles); checks the GIME buffer against the reference conversion and the shadow against the page, and reports cycles per changed pair and per rectangle line. `--vid` runs another copy (the previous version) for a like-for-like comparison. Run it before any change to `vid.asm`, then the MAME invariant probes.
+
 ## MAME probes (`kit/mame/`, env `KIT=<kit repo>`, `CMD='LOADM"<loader>":EXEC'`, `INPUT=<script>`)
 - `prof.lua`: flips/ticks every n frames (`FLIPS`), debugger trace (`TRACE=start,len`), snapshots (`SNAP`). Turn a trace into cycles per routine with `python3 -m kit.mame.profile`.
-- `inv512.lua` + `kit.mame.invcheck512`, `inv128.lua` + `kit.mame.invcheck128`: the screen equals the conversion of the Apple page.
+- `inv128.lua` + `kit.mame.invcheck128`: the GIME buffer equals the conversion of the shown Apple page.
+- `watch.lua`: long runs. Ticks and flips every 1000 frames, a `STALL` report (registers, MMU) when the IRQ tick stops, and an optional periodic cheat poke (`POKE=block:offset:value`, e.g. infinite lives) so late-game loads are reached.
+- `inv512.lua` + `kit.mame.invcheck512`: the GIME buffer equals the conversion of the page's **shadow**. It does not compare the shadow with the Apple page, so it cannot catch a native that misses a `vm_rect` (stale pixels); the native test's `rect_misses` covers that.
 - `run_mame.sh DSK CMD OUTDIR FRAMES...`: headless PNGs (`RAM=128k` for the 128K target).
 - Input scripts: `kit/mame/input.lua` format (`T key SPACE`, `T joyx 1023`, `T btn 1`, `T1-T2/N keys QAZ`).
 

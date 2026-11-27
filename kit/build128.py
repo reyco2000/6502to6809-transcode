@@ -3,7 +3,10 @@
 The port's spec supplies, besides the generator inputs (kit/gen.py): BASE (boot image name, default 'cold'),
 STAGES (ordered overlay image names; the native stage loader gets their number 1..n), title(ram) (loading screen
 lines), NATIVE_SRC(ram) (the port's native .asm files), START_LABEL (native entry after the runtime init),
-BLOCKB_RESERVE (bytes kept at the top of code block B for the port's natives: equate BLOCKB_TOP).
+BLOCKB_RESERVE (bytes kept at the top of code block B for the port's natives: equate BLOCKB_TOP),
+NATIVE_SRC_B(ram) (optional: native .asm files assembled into code block B at BLOCKB_TOP, below the reserve, and
+streamed in at boot; same assembly as the runtime, so labels and macros are shared; on 512K they join the resident
+natives).
 See docs/SPEC.md.
 
 Needs the snapshots in <build>/snap (the port's snapshots.py, made from the user's disk).
@@ -117,6 +120,8 @@ def io_defaults(lines_sets, defined):
 def start_lines(name, pfx, eng):
     """<pfx>START: the snapshot's stack (6502 return frames as native labels), registers, flags, entry"""
     st = spec.entry_state(name)
+    if st.get('call') and name != getattr(spec, 'BASE', 'cold'):
+        return [f'{pfx}START\tjsr\tx_trap', '\tfdb\t0']        # a call stage is never started (nt_ovl returns)
     lab = lambda a: f'E{a:04X}' if a in eng else f'{pfx}{a:04X}'
     s = st['s']
     out = [f'{pfx}START', f'\tlds\t#${0x100 + s + 1:04X}']
@@ -130,20 +135,38 @@ def start_lines(name, pfx, eng):
 
 
 def stage_runs(n):
-    """[(page, bytes)]: the pages the real loader writes for stage n, as contiguous runs"""
-    if spec.is_call(STAGES[n - 1]):
-        raise SystemExit(f'stage {STAGES[n - 1]} is a call stage (loader returns to the game): the 128K target does '
-                         'not stream call stages yet (docs/MEMORY.md); build the 512K target')
+    """[(Apple address, bytes)]: what the loader writes for stage n, as contiguous runs, each within the streamer's
+    two-block destination window.  Restart stage: every page it touches, whole.  Call stage: exactly the bytes it
+    wrote (the rest of RAM is live game state), except the stack page: the loader's own frames are dead once it
+    returns, and the game's frames (and the native's) live there"""
     mem = open(snap_file(STAGES[n - 1], 'bin'), 'rb').read()
     mask = open(snap_file(STAGES[n - 1], 'mask'), 'rb').read()
-    runs = []
-    for p in range(0xC0):
-        if any(mask[p * 256:(p + 1) * 256]):
-            if runs and runs[-1][1] == p:
-                runs[-1][1] = p + 1
+    spans = []
+    if spec.is_call(STAGES[n - 1]):
+        a = 0
+        while a < 0xC000:
+            if mask[a] and a >> 8 != 1:
+                e = a
+                while e < 0xC000 and mask[e] and e >> 8 != 1:
+                    e += 1
+                spans.append([a, e])
+                a = e
             else:
-                runs.append([p, p + 1])
-    return [(p0, mem[p0 * 256:p1 * 256]) for p0, p1 in runs]
+                a += 1
+    else:
+        for p in range(0xC0):
+            if any(mask[p * 256:(p + 1) * 256]):
+                if spans and spans[-1][1] == p * 256:
+                    spans[-1][1] = (p + 1) * 256
+                else:
+                    spans.append([p * 256, (p + 1) * 256])
+    out = []
+    for a, e in spans:
+        while a < e:
+            w = min(e, (a & ~0x1FFF) + 0x4000)      # the run's block and the next one
+            out.append((a, mem[a:w]))
+            a = w
+    return out
 
 
 def aram_dest(addr):
@@ -183,6 +206,9 @@ def build(out_dsk, verbose=True, plain=False):
         nat_src += src(f)
     if os.path.exists(os.path.join(sdir, 'hw_inst.asm')):     # accepted hardware idioms (spec HW_IDIOMS)
         nat_src += [ln for ln in src(os.path.join(sdir, 'hw_inst.asm')) if ln.strip()]
+    natb_src = []                                           # native code in code block B (spec NATIVE_SRC_B)
+    for f in getattr(spec, 'NATIVE_SRC_B', lambda ram: [])(128):
+        natb_src += src(f)
     xiy = src(os.path.join(sdir, 'xiy.asm'))
     import re
     from .hw import iocheck
@@ -199,12 +225,14 @@ def build(out_dsk, verbose=True, plain=False):
             ['ds_stg\tfdb\t' + ','.join(f'ds_st{n}' for n in range(1, len(STAGES) + 1))]
         for n in range(1, len(STAGES) + 1):
             tab += file_lines(f'ds_st{n}', files[n][0], files[n][1:])
-        return (['\tpragma\tnoautobranchlength', '\tsetdp\t0', 'XMMU\tequ\t1', f'NSTAGES\tequ\t{len(STAGES)}'] + layout_lines() +
+        return (['\tpragma\tnoautobranchlength', '\tsetdp\t0', 'XMMU\tequ\t1', 'T128\tequ\t1', f'NSTAGES\tequ\t{len(STAGES)}'] + layout_lines() +
+                (['HRACC\tequ\t1'] if getattr(spec, 'HIRES_ACCESS', False) else []) +
                 [f'OVORG\tequ\t${ovorg:04X}', f'OVBASE\tequ\t${ovorg + 3:04X}', f'BLOCKB_TOP\tequ\t${BLOCKB_TOP:04X}',
                  f'DS_TOTAL\tequ\t{total}', f'DS_BARLEN\tequ\t{BAR[2]}'] + ovt_inc +
                 [f'vid_conv\tequ\t${VID_ORG:04X}', f'vid_scroll\tequ\t${VID_ORG + 3:04X}', 'RT_START_GAME\tequ\t' + spec.START_LABEL,
                  '\torg\t$2000'] + eng_src +
-                ['eng_end'] + rt_src + nat_src + xiy + iod + rowtab_lines() + tab + ['rt_end'])
+                ['eng_end'] + rt_src + nat_src + xiy + iod + rowtab_lines() + tab + ['rt_end'] +
+                ([f'\torg\t${BLOCKB_TOP:04X}', 'natb_org'] + natb_src + ['natb_end'] if natb_src else []))
 
     def assemble_main(files, ovorg, total=1):
         mb, ms = os.path.join(bdir, 'main.bin'), os.path.join(bdir, 'main.sym')
@@ -215,13 +243,22 @@ def build(out_dsk, verbose=True, plain=False):
         code = (LAYOUT['BLK_EC2'], 0x8000 + ovorg - 0xC000)
         f = {'cold': (pos['cold'], [aram_dest(0), code],
                       [(LAYOUT['BLK_TA'], 0x8000), (LAYOUT['BLK_EC1'], 0x8000),
-                       (LAYOUT['BLK_VID'], 0x8000 + VID_ORG - 0xC000)])}
+                       (LAYOUT['BLK_VID'], 0x8000 + VID_ORG - 0xC000)] +
+                      ([(LAYOUT['BLK_EC2'], 0x8000 + BLOCKB_TOP - 0xC000)] if natb_src else []))}
         for n in range(1, len(STAGES) + 1):
-            f[n] = (pos[n], [aram_dest(p0 * 256) for p0, _ in stg_runs[n]] + [code])
+            f[n] = (pos[n], [aram_dest(a) for a, _ in stg_runs[n]] + [code])
         return f
 
     nopos = {k: (0, 0) for k in ['cold'] + list(range(1, len(STAGES) + 1))}
+    global BLOCKB_TOP
+    BLOCKB_TOP = 0xE000 - getattr(spec, 'BLOCKB_RESERVE', 0)
+    natb_len = 0
+    if natb_src:                                            # block-B natives: just below the reserve
+        _, s = assemble_main(files_of(nopos, 0xC000), 0xC000)
+        natb_len = s['natb_end'] - s['natb_org']
+        BLOCKB_TOP = (BLOCKB_TOP - natb_len) & ~15
     _, sym0 = assemble_main(files_of(nopos, 0xC000), 0xC000)
+    assert not natb_src or sym0['natb_end'] - sym0['natb_org'] == natb_len, 'block-B natives change size with their origin'
     ovorg = 0xC000 + ((sym0['eng_end'] - 0x4000 + 15) & ~15)    # stage code: code block B after the engine
     assert ovorg >= 0xC000, 'engine shorter than one block (OVORG layout assumes it spills into block B)'
     mem, sym = assemble_main(files_of(nopos, ovorg), ovorg)
@@ -235,6 +272,9 @@ def build(out_dsk, verbose=True, plain=False):
     assert len(vid_b) <= 0xE000 - VID_ORG, f'converter too big ({len(vid_b)} bytes, room {0xE000 - VID_ORG})'
     say(f'converter {len(vid_b)} bytes at ${VID_ORG:04X} (room {0xE000 - VID_ORG})')
     assert sym['rt_end'] <= RT_LIMIT, f'runtime overlaps the constant page (${sym["rt_end"]:04X})'
+    if natb_src:
+        say(f'block-B natives ${BLOCKB_TOP:04X}-${sym["natb_end"] - 1:04X} ({natb_len} bytes), '
+            f'reserve ${sym["natb_end"]:04X}-$DFFF ({0xE000 - sym["natb_end"]} bytes)')
 
     # ---- code banks (copied into code block B at OVORG by the streamer)
     banks = {}
@@ -254,7 +294,8 @@ def build(out_dsk, verbose=True, plain=False):
     cold = open(snap_file(SETS[0], 'bin'), 'rb').read()[:0xC000]
     rt_len = sym['rt_end'] - 0xE000
     rt_sectors = -(-rt_len // 256)
-    contents = {'cold': [cold, banks['cold'], bytes(ta) + bytes(tb), engine_b, vid_b]}
+    natb_b = bytes(mem.get(a, 0) for a in range(BLOCKB_TOP, sym['natb_end'])) if natb_src else None
+    contents = {'cold': [cold, banks['cold'], bytes(ta) + bytes(tb), engine_b, vid_b] + ([natb_b] if natb_src else [])}
     for n in range(1, len(STAGES) + 1):
         contents[n] = [r for _, r in stg_runs[n]] + [banks[SETS[n]]]
     zdata, pos, ends = {}, {}, {}

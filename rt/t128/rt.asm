@@ -208,6 +208,133 @@ hr_off	pshs	cc,a
 	sta	$FFA2
 	puls	cc,a,pc
 
+	ifdef	HRACC
+; hr_rd / hr_wr: translated code's hi-res accesses (spec HIRES_ACCESS; kit/xc65.py).  X = Apple address (any
+; RAM below $C000 works); the byte goes through IOV.  hr_wr keeps, per hi-res page, the bounding box of the bytes
+; it wrote (line and column from the address; the 8 unshown bytes of each 128 are skipped), and hr_flush reports
+; it with vm_rect at the next flip / VBL.  Preserve everything but IOV.
+hr_rd	pshs	cc,a
+	lda	#BLK_ARAM+1
+	sta	$FFA1
+	inca
+	sta	$FFA2
+	lda	,x
+	sta	IOV
+	lda	#BLK_EC1
+	sta	$FFA1
+	lda	#BLK_EC2
+	sta	$FFA2
+	puls	cc,a,pc
+hr_wr	pshs	cc,a
+	cmpx	#$C000			; ROM / slot space: the Apple drops the write (here it would hit the runtime)
+	bhs	hrw_x
+	lda	#BLK_ARAM+1
+	sta	$FFA1
+	inca
+	sta	$FFA2
+	lda	IOV
+	sta	,x
+	lda	#BLK_EC1
+	sta	$FFA1
+	lda	#BLK_EC2
+	sta	$FFA2
+	cmpx	#$2000
+	blo	hrw_x
+	cmpx	#$6000
+	bhs	hrw_x
+	pshs	b,u
+	ldu	#hr_bx1
+	cmpx	#$4000
+	bhs	hrw_p2
+	sta	hr_d1			; any non-zero value: A = BLK_EC2
+	bra	hrw_1
+hrw_p2	sta	hr_d2
+	leau	4,u
+hrw_1	tfr	x,d			; offset in the page = (y AND 7)*$400 + (y/8 AND 7)*$80 + (y/64)*40 + column
+	anda	#$1F
+	pshs	d
+	andb	#$7F
+	clra				; A = 64 * third of the screen, B = column
+	cmpb	#40
+	blo	hrw_g
+	subb	#40
+	lda	#64
+	cmpb	#40
+	blo	hrw_g
+	subb	#40
+	lda	#128
+	cmpb	#40
+	bhs	hrw_h			; $78-$7F of each 128: not shown
+hrw_g	pshs	d
+	ldd	2,s
+	lslb
+	rola				; A = offset bits 12-7
+	tfr	a,b
+	andb	#7
+	lslb
+	lslb
+	lslb				; (y/8 AND 7) * 8
+	lsra
+	lsra
+	lsra				; y AND 7
+	pshs	b
+	adda	,s+
+	adda	,s			; A = line
+	cmpa	,u
+	bhs	hrw_2
+	sta	,u
+hrw_2	cmpa	1,u
+	bls	hrw_3
+	sta	1,u
+hrw_3	ldb	1,s
+	cmpb	2,u
+	bhs	hrw_4
+	stb	2,u
+hrw_4	cmpb	3,u
+	bls	hrw_5
+	stb	3,u
+hrw_5	leas	2,s
+hrw_h	leas	2,s
+	puls	b,u
+hrw_x	puls	cc,a,pc
+; hr_flush: report the boxes hr_wr collected (vm_rect), then empty them.  Preserves all.
+hr_flush
+	pshs	cc,d,u
+	ldu	#hr_bx1
+	lda	hr_d1
+	beq	hrf_2
+	clr	hr_d1
+	lda	#$20
+	bsr	hrf_r
+hrf_2	ldu	#hr_bx2
+	lda	hr_d2
+	beq	hrf_x
+	clr	hr_d2
+	lda	#$40
+	bsr	hrf_r
+hrf_x	puls	cc,d,u,pc
+hrf_r	ldb	,u
+	cmpb	1,u
+	bhi	hrf_e			; only unshown bytes
+	ldb	,u
+	stb	vr_y0
+	ldb	1,u
+	stb	vr_y1
+	ldb	2,u
+	stb	vr_c0
+	ldb	3,u
+	stb	vr_c1
+	jsr	vm_rect
+hrf_e	ldd	#$FF00
+	std	,u
+	std	2,u
+	rts
+hr_d1	fcb	0			; page written since the last flush (hr_d2 must follow: probes read hr_d1 + page)
+hr_d2	fcb	0
+hr_bx1	fcb	$FF,0,$FF,0		; lines y0-y1, columns c0-c1
+hr_bx2	fcb	$FF,0,$FF,0
+	endc
+
 ; ---------------------------------------------------------------- dirty rectangles
 ; Per hi-res page: a list of up to VR_MAX rectangles (line0, line1, col0, col1, inclusive), or vr_n = $FF for
 ; the whole page.  vconv converts (and empties) the list of the page it shows.
@@ -627,6 +754,9 @@ v_flip	pshs	cc,a
 	cmpa	v_shown
 	beq	vf_x
 	sta	v_shown
+	ifdef	HRACC
+	jsr	hr_flush
+	endc
 	jsr	vconv
 	jsr	vshow
 vf_x	puls	cc,a,pc
@@ -637,6 +767,9 @@ vf_x	puls	cc,a,pc
 rt_vbl	pshs	a
 	lda	v_shown
 	bmi	rv1
+	ifdef	HRACC
+	jsr	hr_flush
+	endc
 	jsr	vconv
 rv1	lda	$FF92			; Apple RDVBL: return at once while still in vertical blank
 	anda	#$20
@@ -714,9 +847,11 @@ vcv_n	ldb	v_ref
 	bmi	vcv_c			; unknown: full
 	cmpb	vcv_pg
 	beq	vcv_f			; P = L: full
-	ldx	#vr_n1			; drawn on L while shown: that first, in full
+	ldx	#vr_n1			; drawn on L while shown: that first, in full ...
 	tst	b,x
 	beq	vcv_c
+	bsr	vr_ovl			; ... unless none of it touches P's list: outside R_P the screen already shows
+	beq	vcv_c			; P, and L keeps its list (L differs from the screen there)
 	tfr	b,a
 	ldb	#$FF
 	jsr	vid_conv
@@ -730,6 +865,56 @@ vcv_c	lda	vcv_pg
 	clr	$FF91
 	lds	vc_sv
 	puls	cc,d,dp,x,y,u,pc
+; vr_ovl: B = page L (0/1).  Z = 1 when no rectangle of L's list overlaps one of the other page's list (lines
+; overlap, columns within 3: the converter redoes a changed pair's neighbours).  A whole-page list overlaps.
+; Preserves all but CC.
+vr_ovl	pshs	d,x,y,u
+	ldx	#vr_n1
+	ldu	#vr_l1
+	ldy	#vr_l2
+	tstb
+	beq	vro_1
+	exg	u,y
+vro_1	lda	b,x			; A = L's count, B = P's count
+	eorb	#1
+	ldb	b,x
+	cmpa	#$FF
+	beq	vro_y
+	cmpb	#$FF
+	beq	vro_y
+	tsta
+	beq	vro_n
+	tstb
+	beq	vro_n
+	pshs	d,y
+vro_l	ldy	2,s
+	ldb	1,s
+vro_p	lda	,y			; P.y0 <= L.y1, P.y1 >= L.y0
+	cmpa	1,u
+	bhi	vro_nx
+	lda	1,y
+	cmpa	,u
+	blo	vro_nx
+	lda	3,u			; P.c0 <= L.c1 + 3, P.c1 + 3 >= L.c0
+	adda	#3
+	cmpa	2,y
+	blo	vro_nx
+	lda	3,y
+	adda	#3
+	cmpa	2,u
+	blo	vro_nx
+	leas	4,s
+vro_y	lda	#1			; Z = 0
+	puls	d,x,y,u,pc
+vro_nx	leay	4,y
+	decb
+	bne	vro_p
+	leau	4,u
+	dec	,s
+	bne	vro_l
+	leas	4,s
+vro_n	clra				; Z = 1
+	puls	d,x,y,u,pc
 vc_sv	fdb	0
 vcv_pg	fcb	0
 vcv_sc	fcb	0

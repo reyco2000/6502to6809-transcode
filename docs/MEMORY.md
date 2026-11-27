@@ -9,7 +9,7 @@ Both targets keep Apple RAM `$0000-$BFFF` at the same logical addresses. Zero pa
 | 0 | `$0000-$1FFF` | Apple RAM |
 | 1-2 | `$2000-$5FFF` | Transcoded **engine code** (two 8K blocks). Between `HRON`/`HROFF` (natives) this window shows the hi-res **bitmaps** instead. |
 | 3-5 | `$6000-$BFFF` | Apple RAM |
-| 6 | `$C000-$DFFF` | Overlay code. 512K: the current image's own code bank. 128K: code block B, with the level code at `OVORG` after the engine's tail, and the native tables at `BLOCKB_TOP`. |
+| 6 | `$C000-$DFFF` | Overlay code. 512K: the current image's own code bank. 128K: code block B, with the level code at `OVORG` after the engine's tail, and the port's block-B natives (`NATIVE_SRC_B`) and tables from `BLOCKB_TOP`. |
 | 7 | `$E000-$FDFF` | Resident runtime and the port's natives; the `$FExx` constant page holds vectors and converter variables. |
 
 Task 1 is used by the video converter: Apple page, GIME window, tables, converter code.
@@ -39,7 +39,7 @@ Load: `<loader>.BIN` (fast loader) reads `<loader>.DAT` into the data blocks. Th
 | `$30-$33` | The single GIME buffer; the converter sits in the tail of `$33` |
 | `$34` | Log block: staged commit log, and the disk track buffer while loading |
 | `$35`/`$36` | TA/TB |
-| `$37`/`$38` | Engine code; the level code at `OVORG`; native tables at `BLOCKB_TOP` |
+| `$37`/`$38` | Engine code; the level code at `OVORG`; block-B natives and tables from `BLOCKB_TOP` |
 | `$39-$3E` | Apple RAM |
 | `$3F` | Runtime + disk streamer |
 
@@ -53,6 +53,7 @@ How data gets in:
 - Nothing is kept compressed in RAM.
 - The boot streams the boot image from disk.
 - A level load streams that level's pages and code while the screen keeps the last frame.
+- A call stage (a mid-game load the game's loader returns from) streams exactly the bytes the loader wrote (not the stack page) and the stage's code at `OVORG`. The caller's state is kept, and the screen keeps the last frame (interrupts off, about 1.7 s for 15K).
 - A reboot streams the boot image again.
 
 Costs:
@@ -62,7 +63,7 @@ Costs:
 ## Budgets to watch
 - **Engine:** ≤ 16K (`$2000-$5FFF`).
   - 512K: each image's code ≤ 8K.
-  - 128K: engine tail + largest level code + `BLOCKB_RESERVE` ≤ 8K in block B.
-- **Runtime + natives:** ≤ `$FE00`. Natives grow the runtime block, so move big tables to block B or data blocks.
+  - 128K: engine tail + largest level code + block-B natives + `BLOCKB_RESERVE` ≤ 8K in block B.
+- **Runtime + natives:** ≤ `$FE00`. Natives grow the runtime block, so on 128K move big tables or whole natives (`NATIVE_SRC_B`) to block B.
 - **Converter:** ≤ 2K on 128K (tail of the last GIME block).
 - **Disk:** 35 tracks × 18 sectors of RS-DOS; the build reports free granules. A bigger game needs a second disk or a better compressor.

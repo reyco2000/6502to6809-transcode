@@ -2,7 +2,9 @@
 
 The port's spec supplies, besides the generator inputs (kit/gen.py): BASE (boot image name, default 'cold'),
 STAGES (ordered overlay image names; the native stage loader gets their number 1..n), title(ram) (loading screen
-lines), NATIVE_SRC(ram) (the port's native .asm files), START_LABEL (native entry after the runtime init).
+lines), NATIVE_SRC(ram) (the port's native .asm files), NATIVE_SRC_B(ram) (optional: natives assembled at BLOCKB_TOP and
+copied to the top of every code bank, which slot 6 always maps; same assembly as the runtime), START_LABEL (native
+entry after the runtime init).
 See docs/SPEC.md.
 
 Needs the snapshots in <build>/snap (the port's snapshots.py, made from the user's disk).
@@ -179,6 +181,10 @@ def build(out_dsk, verbose=True):
     nat_src = []
     for f in spec.NATIVE_SRC(512):
         nat_src += src(f)
+    natb_src = []                                           # NATIVE_SRC_B: at the top of every code bank (slot 6)
+    for f in getattr(spec, 'NATIVE_SRC_B', lambda ram: [])(512):
+        natb_src += src(f)
+    bt = [0xE000]                                           # BLOCKB_TOP: where they start
     if os.path.exists(os.path.join(sdir, 'hw_inst.asm')):     # accepted hardware idioms (spec HW_IDIOMS)
         nat_src += [ln for ln in src(os.path.join(sdir, 'hw_inst.asm')) if ln.strip()]
     xiy = src(os.path.join(sdir, 'xiy.asm'))
@@ -191,13 +197,13 @@ def build(out_dsk, verbose=True):
     iod = io_defaults([eng_src] + list(ovl_src.values()), defined)
 
     def main_lines(blobs, stg):
-        return (['\tpragma\tnoautobranchlength', '\tsetdp\t0', 'XMMU\tequ\t1', f'NSTAGES\tequ\t{len(STAGES)}'] +
+        return (['\tpragma\tnoautobranchlength', '\tsetdp\t0', 'XMMU\tequ\t1', 'T512\tequ\t1', f'NSTAGES\tequ\t{len(STAGES)}'] +
                 (['HRACC\tequ\t1'] if getattr(spec, 'HIRES_ACCESS', False) else []) + layout_lines() + ovt +
                 ['vid_conv\tequ\t$C000', 'vid_scroll\tequ\t$C003', 'RT_START_GAME\tequ\t' + spec.START_LABEL, '\torg\t$2000'] + eng_src +
                 ['eng_end'] + rt_src + nat_src + xiy + iod +
                 ['rt_blobs'] + [f'\tfcb\t${b:02X}\n\tfdb\t${o:04X}\n\tfcb\t${d:02X}' for b, o, d in blobs] +
                 ['\tfcb\t0', 'stg_tab'] + [f'\tfcb\t${b:02X}\n\tfdb\t${o:04X}\n\tfcb\t${k:02X}' for b, o, k in stg] +
-                ['rt_end'])
+                ['rt_end'] + ([f'\torg\t${bt[0]:04X}', 'natb_org'] + natb_src + ['natb_end'] if natb_src else []))
 
     def assemble_main(blobs, stg):
         mb, ms = os.path.join(bdir, 'main.bin'), os.path.join(bdir, 'main.sym')
@@ -205,7 +211,17 @@ def build(out_dsk, verbose=True):
         return read_decb(mb), symbols(ms)
 
     nblobs = 1 + 1 + 1 + len(SETS) + 1         # tables, video, engine, banks, cold RAM
+    natb_len = 0
+    if natb_src:                                # size the bank-top natives, then place them just below $E000
+        bt[0] = 0xC000
+        _, s0 = assemble_main([(0, 0, 0)] * nblobs, [(0, 0, 0)] * len(STAGES))
+        natb_len = s0['natb_end'] - s0['natb_org']
+        bt[0] = (0xE000 - natb_len) & ~15
     mem, sym = assemble_main([(0, 0, 0)] * nblobs, [(0, 0, 0)] * len(STAGES))
+    assert not natb_src or sym['natb_end'] - sym['natb_org'] == natb_len, 'bank-top natives change size with their origin'
+    natb_b = bytes(mem.get(a, 0) for a in range(bt[0], sym['natb_end'])) if natb_src else b''
+    if natb_src:
+        say(f'bank-top natives ${bt[0]:04X}-${sym["natb_end"] - 1:04X} ({natb_len} bytes, in every code bank)')
     say(f'engine ${0x2000:04X}-${sym["eng_end"] - 1:04X} ({sym["eng_end"] - 0x2000} bytes), '
         f'runtime $E000-${sym["rt_end"] - 1:04X} ({sym["rt_end"] - 0xE000} bytes)')
     assert sym['eng_end'] <= 0x6000, 'engine does not fit in $2000-$5FFF'
@@ -224,8 +240,10 @@ def build(out_dsk, verbose=True):
         assemble(['\tpragma\tnoautobranchlength', '\tsetdp\t0'] + exp + ['\torg\t$C000', f'\tjmp\t{pfx}START']
                  + ovl_src[n] + start_lines(n, pfx, eng) + [f'{pfx}END'], b, symbols=b + '.sym')
         banks[n] = open(b, 'rb').read()
-        assert len(banks[n]) <= 0x2000, f'bank {n} too big'
-        say(f'bank {n}: {len(banks[n])} bytes')
+        assert 0xC000 + len(banks[n]) <= bt[0], f'bank {n} too big ({len(banks[n])}, room {bt[0] - 0xC000})'
+        say(f'bank {n}: {len(banks[n])} bytes (room {bt[0] - 0xC000})')
+        if natb_src:
+            banks[n] = banks[n].ljust(bt[0] - 0xC000, b'\0') + natb_b
 
     # ---- blobs
     ta, tb = gen_tables.build()

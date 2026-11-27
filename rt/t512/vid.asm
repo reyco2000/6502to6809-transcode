@@ -21,7 +21,7 @@ vc_y1	equ	$0B
 vc_p0	equ	$0C			; first pair, pairs per line
 vc_np	equ	$0D
 vc_left	equ	$0E
-vc_rs	equ	$14			; (unused)
+vc_rend	equ	$14			; rowtab entry after the rectangle's last line
 vc_rd	equ	$16
 vc_end	equ	$18
 vc_dif	equ	$1A			; changed bits of the pair (new EOR shadow), 2 bytes
@@ -312,10 +312,19 @@ vc_rset	lda	<vc_p0
 	mul
 	addd	#rowtab
 	std	<vc_ry
+	lda	<vc_y1
+	inca
+	ldb	#5
+	mul
+	addd	#rowtab
+	std	<vc_rend
 	ldb	<vc_l2
 	ldy	#vc_ent
 	ldd	b,y
 	std	<vc_ja
+	lda	<vc_y
+	cmpa	<vc_y1
+	bhi	vc_rdone
 	bra	vc_rect
 vc_skip	leau	4,u
 	stu	<vc_rp
@@ -326,10 +335,7 @@ vc_ret	rts
 ; lines vc_y..vc_y1, pairs vc_p0 .. +vc_np-1; then the next rectangle (vc_n left)
 ; Per line: the GIME window is remapped only when the line's block changes; the line end is source + l2.
 ; vc_force is 0 here (vc_edge clears it when it gives up at the end of a line).
-vc_rect	lda	<vc_y
-	cmpa	<vc_y1
-	bhi	vc_rdone
-	ldy	<vc_ry
+vc_rect	ldy	<vc_ry
 	lda	2,y
 	cmpa	<vc_blk
 	bne	vc_map
@@ -431,7 +437,7 @@ vc_fnd	leax	-2,x			; changed pair: destination and pair counter from its index
 vc_pair	ldd	,x			; only while a right neighbour must be redone
 	cmpd	-$2000,x
 	bne	vc_chg
-	bsr	vc_cvt
+	lbsr	vc_cvta			; unchanged: only its left half (pixels 0-6) depends on our bits 6-7
 	clr	<vc_force
 vc_nxt	leax	2,x
 	leau	7,u
@@ -459,7 +465,7 @@ vc_edg0	clr	<vc_force
 vc_rowd	ldd	<vc_ry
 	addd	#5
 	std	<vc_ry
-	inc	<vc_y
+	cmpd	<vc_rend
 	bne	vc_rect
 vc_rdone
 	tst	<vc_n
@@ -482,28 +488,24 @@ vc_chg	eora	-$2000,x
 	bne	vc_c1
 	lda	<vc_cnt
 	cmpa	#20
-	beq	vc_c1
+	beq	vc_c1f
 	lda	<vc_dif
 	lsra
 	bcc	vc_c1
-	leax	-2,x			; left neighbour: its right edge depends on us
+	leax	-2,x			; left neighbour: its right half depends on us
 	cmpx	<vc_last		; (unless it was just converted: vc_cvt reads the bitmap, so it already saw us)
 	beq	vc_c0
-	leau	-7,u
-	inc	<vc_cnt
-	bsr	vc_cvt
-	dec	<vc_cnt
-	leax	2,x
-	leau	7,u
-	bra	vc_c1
+	lbsr	vc_cvtb
 vc_c0	leax	2,x
-vc_c1	bsr	vc_cvt
-	clr	<vc_force
+vc_c1	bsr	vc_cvtn			; not the first pair here
+vc_c1x	clr	<vc_force
 	lda	<vc_dif+1
 	anda	#$C0
 	beq	vc_nxt
 	inc	<vc_force
 	bra	vc_nxt
+vc_c1f	bsr	vc_cvt
+	bra	vc_c1x
 
 ; vc_cvt: X = pair source, U = pair destination (7 bytes).  vc_cnt: 20 = first pair, 1 = last.
 vc_cvt	stx	<vc_last
@@ -512,6 +514,7 @@ vc_cvt	stx	<vc_last
 	bne	vc_c2
 	clra
 	bra	vc_c3
+vc_cvtn	stx	<vc_last		; not the first pair: the left byte exists
 vc_c2	lda	-1,x
 vc_c3	ldb	1,x
 	lsrb
@@ -555,5 +558,55 @@ vc_c5	lsrb
 	std	3,u
 	ldd	2,y
 	std	5,u
+	rts
+; Half conversions for a neighbour whose own bytes did not change.  GIME byte 3 is shared: TA gives its high
+; nibble (pixel 6), TB its low nibble (pixel 7); the other half is kept.
+; vc_cvtb: X = left neighbour's source, U = our destination: the neighbour's TB half (its bytes 3-6 = -4..-1,U).
+vc_cvtb	ldb	2,x
+	lsrb
+	lda	,x
+	rola
+	rola
+	rola
+	anda	#7
+	ldb	1,x
+	lslb
+	rola
+	lslb
+	rola
+	adda	#$A0
+	tfr	d,y
+	lda	-4,u
+	anda	#$F0
+	ora	,y
+	sta	-4,u
+	ldd	1,y
+	std	-3,u
+	lda	3,y
+	sta	-1,u
+	rts
+; vc_cvta: X = the right neighbour's source, U = its destination: its TA half (bytes 0-3); never the first pair.
+vc_cvta	lda	-1,x
+	ldb	1,x
+	lsrb
+	rola
+	rola
+	rola
+	anda	#7
+	ldb	,x
+	lslb
+	rola
+	lslb
+	rola
+	adda	#$80
+	tfr	d,y
+	ldd	,y
+	std	,u
+	lda	2,y
+	sta	2,u
+	lda	3,u
+	anda	#$0F
+	ora	3,y
+	sta	3,u
 	rts
 	setdp	0

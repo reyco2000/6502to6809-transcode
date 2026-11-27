@@ -189,8 +189,9 @@ hr_off	pshs	cc,a
 
 	ifdef	HRACC
 ; hr_rd / hr_wr: translated code's hi-res accesses (spec HIRES_ACCESS; kit/xc65.py).  X = Apple address (any
-; RAM below $C000 works); the byte goes through IOV.  hr_wr marks the page for a whole-page conversion at the
-; next flip / VBL (hr_flush).  Preserve everything but IOV.
+; RAM below $C000 works); the byte goes through IOV.  hr_wr keeps, per hi-res page, the bounding box of the bytes
+; it wrote (line and column from the address; the 8 unshown bytes of each 128 are skipped), and hr_flush reports
+; it with vm_rect at the next flip / VBL.  Preserve everything but IOV.
 hr_rd	pshs	cc,a
 	lda	#BLK_ARAM+1
 	sta	$FFA1
@@ -218,30 +219,99 @@ hr_wr	pshs	cc,a
 	sta	$FFA2
 	cmpx	#$2000
 	blo	hrw_x
-	cmpx	#$4000
-	bhs	hrw_2
-	sta	hr_d1			; any non-zero value: A = BLK_EC2
-	puls	cc,a,pc
-hrw_2	cmpx	#$6000
+	cmpx	#$6000
 	bhs	hrw_x
-	sta	hr_d2
+	pshs	b,u
+	ldu	#hr_bx1
+	cmpx	#$4000
+	bhs	hrw_p2
+	sta	hr_d1			; any non-zero value: A = BLK_EC2
+	bra	hrw_1
+hrw_p2	sta	hr_d2
+	leau	4,u
+hrw_1	tfr	x,d			; offset in the page = (y AND 7)*$400 + (y/8 AND 7)*$80 + (y/64)*40 + column
+	anda	#$1F
+	pshs	d
+	andb	#$7F
+	clra				; A = 64 * third of the screen, B = column
+	cmpb	#40
+	blo	hrw_g
+	subb	#40
+	lda	#64
+	cmpb	#40
+	blo	hrw_g
+	subb	#40
+	lda	#128
+	cmpb	#40
+	bhs	hrw_h			; $78-$7F of each 128: not shown
+hrw_g	pshs	d
+	ldd	2,s
+	lslb
+	rola				; A = offset bits 12-7
+	tfr	a,b
+	andb	#7
+	lslb
+	lslb
+	lslb				; (y/8 AND 7) * 8
+	lsra
+	lsra
+	lsra				; y AND 7
+	pshs	b
+	adda	,s+
+	adda	,s			; A = line
+	cmpa	,u
+	bhs	hrw_2
+	sta	,u
+hrw_2	cmpa	1,u
+	bls	hrw_3
+	sta	1,u
+hrw_3	ldb	1,s
+	cmpb	2,u
+	bhs	hrw_4
+	stb	2,u
+hrw_4	cmpb	3,u
+	bls	hrw_5
+	stb	3,u
+hrw_5	leas	2,s
+hrw_h	leas	2,s
+	puls	b,u
 hrw_x	puls	cc,a,pc
-; hr_flush: whole-page dirty marks for the pages hr_wr wrote.  Preserves all.
+; hr_flush: report the boxes hr_wr collected (vm_rect), then empty them.  Preserves all.
 hr_flush
-	pshs	cc,a
+	pshs	cc,d,u
+	ldu	#hr_bx1
 	lda	hr_d1
 	beq	hrf_2
 	clr	hr_d1
 	lda	#$20
-	jsr	vm_page
-hrf_2	lda	hr_d2
+	bsr	hrf_r
+hrf_2	ldu	#hr_bx2
+	lda	hr_d2
 	beq	hrf_x
 	clr	hr_d2
 	lda	#$40
-	jsr	vm_page
-hrf_x	puls	cc,a,pc
-hr_d1	fcb	0
+	bsr	hrf_r
+hrf_x	puls	cc,d,u,pc
+hrf_r	ldb	,u
+	cmpb	1,u
+	bhi	hrf_e			; only unshown bytes
+	ldb	,u
+	stb	vr_y0
+	ldb	1,u
+	stb	vr_y1
+	ldb	2,u
+	stb	vr_c0
+	ldb	3,u
+	stb	vr_c1
+	jsr	vm_rect
+hrf_e	ldd	#$FF00
+	std	,u
+	std	2,u
+	rts
+hr_d1	fcb	0			; page written since the last flush (hr_d2 must follow: probes read hr_d1 + page)
 hr_d2	fcb	0
+hr_bx1	fcb	$FF,0,$FF,0		; lines y0-y1, columns c0-c1
+hr_bx2	fcb	$FF,0,$FF,0
 	endc
 
 ; ---------------------------------------------------------------- dirty rectangles

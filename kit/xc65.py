@@ -260,6 +260,9 @@ class Emitter:
                                            if i.mode == 'rel' or i.mn in ('JMP', 'JSR')}
         self.labels &= set(code.insns)
         self.ptrs = set()            # zero-page pointers used by (zp),Y -> xiy_ZZ helpers
+        self.skip = set()            # instructions folded into a pushed return address (pushed_return)
+        self.pushed = []             # (address, return target) of the pushed return addresses
+        self._xfer = None
 
     # ---- helpers
     def lab(self, a):
@@ -311,6 +314,35 @@ class Emitter:
         if s is None:
             raise XError(f'${self.cur:04X}: transfer to ${t:04X} not resolvable')
         return s
+
+    def pushed_return(self, addrs, idx):
+        """LDA #hi / PHA / LDA #lo / PHA (no entry inside) pushing (hi:lo) for an RTS to hi:lo + 1 that is code:
+        the 6809 RTS needs the native label there, high byte first.  Called at the first LDA: returns the label
+        (the caller emits LDX # / PSHS X for LDA #hi / PHA; LDA #lo is translated as usual, the second PHA is
+        skipped), else None."""
+        if idx + 3 >= len(addrs):
+            return None
+        g = [self.code.insns[addrs[idx + k]] for k in range(4)]
+        if not (g[0].mn == 'LDA' and g[0].mode == 'imm' and g[1].mn == 'PHA' and g[2].mn == 'LDA'
+                and g[2].mode == 'imm' and g[3].mn == 'PHA'):
+            return None
+        if self._xfer is None:       # entries a transfer in this set reaches (labels may list every instruction)
+            self._xfer = {i.target for i in self.code.insns.values() if i.mode == 'rel' or i.mn in ('JMP', 'JSR')}
+        if any(addrs[idx + k + 1] != g[k].next for k in range(3)) or any(addrs[idx + k] in self._xfer for k in (1, 2, 3)):
+            return None
+        t = ((g[0].arg << 8 | g[2].arg) + 1) & 0xFFFF
+        if t not in self.code.insns and t not in self.ctx.natives and self.ctx.outside(t) is None:
+            return None
+        try:
+            sym = self.target_sym(t, 'jmp')
+        except XError:
+            return None
+        if sym is None:
+            return None
+        self.skip.add(addrs[idx + 1])
+        self.skip.add(addrs[idx + 3])
+        self.pushed.append((addrs[idx], t))
+        return sym
 
     # ---- operands
     def hires_access(self, ins):
@@ -628,8 +660,16 @@ class Emitter:
                 self.st = _St()
             if self.comments:
                 self.out.append(f'* {a:04X}  {ins.text()}')
+            if a in self.skip:             # second PHA of a pushed return address (below)
+                continue
             if ins.mn in REJECT or ins.mode == 'ind':
                 raise XError(f'${a:04X}: {ins.text()} not supported')
+            pr = self.pushed_return(addrs, idx)
+            if pr:
+                self.e('ldx', f'#{pr}')
+                self.e('pshs', 'x')
+                prev_flow = True
+                continue
             after = L.after(a)
             mn = ins.mn
             nxt_cont = idx + 1 < len(addrs) and addrs[idx + 1] == ins.next

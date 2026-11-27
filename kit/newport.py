@@ -114,6 +114,10 @@ def NATIVE_SRC(ram):
     return [os.path.join(_SRC, 'natives.asm'), os.path.join(_SRC, f't{{ram}}', 'start.asm')]
 
 
+# def NATIVE_SRC_B(ram):              # optional: natives in code block B on 128K (runtime block full); resident on 512K
+#     return [os.path.join(_SRC, 'natives_b.asm')]
+
+
 def title(ram):
     """loading screen, 40x24 text: (row, text, attribute[, column]); attribute bits 5-3 = foreground 8-15"""
     return [(1, '{title}', 0x08),
@@ -401,6 +405,28 @@ ntl1\tlslb
 \tjsr\tv_inval
 \tjsr\tv_redraw
 \tjmp\tOVORG
+
+; nt_ovl: B = stage number of a CALL stage (the game's loader returns to its caller): stream its bytes and its code
+; (at OVORG) from the disk, then return.  The screen keeps the last frame meanwhile (interrupts off: polled disk);
+; both pages are then fully dirty and the next conversion is a full one (the log block was the track buffer).
+; The caller must be engine code (the stage code at OVORG is replaced).  Preserves CC, DP, X, Y, U; A, B change.
+nt_ovl\tpshs\tcc,dp,x,y,u
+\torcc\t#$50
+\tdecb
+\tcmpb\t#NSTAGES-1
+\tbls\tnto1
+\tjsr\tx_trap\t\t\t; not a stage number
+\tfdb\t0
+nto1\tlslb
+\tldx\t#ds_stg
+\tldx\tb,x
+\tsts\tnto_s\t\t\t; the streamer runs in task 1 (Apple RAM at $0000): a runtime stack
+\tlds\t#rt_stack
+\tjsr\tds_load
+\tlds\tnto_s
+\tjsr\tv_inval
+\tpuls\tcc,dp,x,y,u,pc
+nto_s\tfdb\t0
 
 nt_reboot
 \torcc\t#$50

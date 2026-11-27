@@ -20,7 +20,7 @@ class AsmError(Exception):
 
 
 def assemble(lines, out_bin, fmt='raw', listing=None, symbols=None, max_rounds=40):
-    lines = list(lines)
+    lines = [s for ln in lines for s in ln.split('\n')]   # one entry per source line: lwasm's line numbers index it
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, 'x.asm')
         for _ in range(max_rounds):
